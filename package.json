@@ -1,0 +1,15 @@
+{
+  "name": "business-wise-p1-starter",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "init": "bun run src/init.ts",
+    "seed": "bun run src/seed.ts",
+    "run": "bun run src/run.ts",
+    "queue": "bun run src/queue.ts",
+    "reset": "rm -f data/sandbox.sqlite && bun run init && bun run seed && bun run run"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}

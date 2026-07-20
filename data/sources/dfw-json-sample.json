@@ -1,0 +1,78 @@
+[
+  {
+    "reportId": "dfw-2026-0001",
+    "companyName": "Westline Freight Solutions",
+    "address": "4500 Regent Blvd",
+    "city": "Irving",
+    "state": "TX",
+    "postalCode": "75063",
+    "phone": "972-555-0133",
+    "website": "westlinefreight.example",
+    "employeeCount": 55,
+    "sourceUrl": "https://dfwchamber.example/reports/2026/0001",
+    "notes": "Freight brokerage expanding with new DFW headquarters",
+    "publishedAt": "2026-07-14T09:00:00.000Z"
+  },
+  {
+    "reportId": "dfw-2026-0002",
+    "companyName": "Trinity Grove Bakery Co",
+    "city": "Grapevine",
+    "state": "TX",
+    "publishedAt": "2026-07-14T09:00:00.000Z"
+  },
+  {
+    "reportId": "dfw-2026-0003",
+    "companyName": "Cedar Ridge Analytics",
+    "address": "2200 Dallas Pkwy",
+    "city": "Plano",
+    "state": "TX",
+    "postalCode": "75093",
+    "website": "cedarridgeanalytics.example",
+    "employeeCount": 18,
+    "publishedAt": "2026-07-15T09:00:00.000Z"
+  },
+  {
+    "reportId": "dfw-2026-0004",
+    "companyName": "Pioneer Steel Fabricators",
+    "address": "900 Foundry Row",
+    "city": "Fort Worth",
+    "state": "TX",
+    "postalCode": "76106",
+    "phone": "817-555-0199",
+    "publishedAt": "2026-07-15T09:00:00.000Z"
+  },
+  {
+    "reportId": "dfw-2026-0005",
+    "companyName": "Lakeview Dental Partners",
+    "address": "300 Lakeview Pkwy",
+    "city": "Rowlett",
+    "state": "TX",
+    "postalCode": "75088",
+    "phone": "972-555-0177",
+    "website": "lakeviewdentalpartners.example",
+    "employeeCount": 12,
+    "sourceUrl": "https://dfwchamber.example/reports/2026/0005",
+    "publishedAt": "2026-07-16T09:00:00.000Z"
+  },
+  {
+    "reportId": "dfw-2026-0001",
+    "companyName": "Westline Freight Solutions",
+    "address": "4500 Regent Blvd",
+    "city": "Irving",
+    "state": "TX",
+    "postalCode": "75063",
+    "phone": "972-555-0133",
+    "website": "westlinefreight.example",
+    "employeeCount": 55,
+    "sourceUrl": "https://dfwchamber.example/reports/2026/0001",
+    "notes": "Duplicate row appearing twice in the same report export",
+    "publishedAt": "2026-07-14T09:00:00.000Z"
+  },
+  {
+    "reportId": "dfw-2026-0006",
+    "companyName": "",
+    "city": "Dallas",
+    "state": "TX",
+    "publishedAt": "2026-07-16T09:00:00.000Z"
+  }
+]

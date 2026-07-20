@@ -1,0 +1,5 @@
+node_modules/
+data/sandbox.sqlite
+data/sandbox.sqlite-*
+data/ingestion.test.sqlite
+data/ingestion.test.sqlite-*

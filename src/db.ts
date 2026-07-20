@@ -3,8 +3,8 @@ import type { CandidateCompany, ExistingCompany, MatchResult } from "./types.ts"
 
 export const DB_PATH = "data/sandbox.sqlite";
 
-export function openDb(): Database {
-  return new Database(DB_PATH, { create: true });
+export function openDb(path: string = DB_PATH): Database {
+  return new Database(path, { create: true });
 }
 
 export function createSchema(db: Database): void {
@@ -26,8 +26,12 @@ export function createSchema(db: Database): void {
     CREATE TABLE IF NOT EXISTS candidates (
       id TEXT PRIMARY KEY,
       source TEXT NOT NULL,
+      source_id TEXT NOT NULL,
       source_url TEXT,
+      source_record_id TEXT,
       captured_at TEXT NOT NULL,
+      ingested_at TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
       company_name TEXT NOT NULL,
       address TEXT,
       city TEXT,
@@ -42,6 +46,7 @@ export function createSchema(db: Database): void {
       contact_name TEXT,
       contact_title TEXT,
       evidence_json TEXT NOT NULL,
+      raw_source_json TEXT,
       raw_json TEXT NOT NULL
     );
 
@@ -57,6 +62,38 @@ export function createSchema(db: Database): void {
       reviewer_note TEXT,
       created_at TEXT NOT NULL,
       FOREIGN KEY(candidate_id) REFERENCES candidates(id)
+    );
+
+    -- One row per source ingestion invocation. Answers: which source ran,
+    -- when, and how many raw/valid/new/duplicate/skipped records it produced.
+    CREATE TABLE IF NOT EXISTS source_runs (
+      id TEXT PRIMARY KEY,
+      source_id TEXT NOT NULL,
+      source_name TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      status TEXT NOT NULL DEFAULT 'running',
+      raw_count INTEGER NOT NULL DEFAULT 0,
+      valid_count INTEGER NOT NULL DEFAULT 0,
+      new_candidate_count INTEGER NOT NULL DEFAULT 0,
+      already_ingested_count INTEGER NOT NULL DEFAULT 0,
+      skipped_count INTEGER NOT NULL DEFAULT 0,
+      error_message TEXT
+    );
+
+    -- Ingestion-deduplication ledger: has this exact source item already been
+    -- processed? Distinct from entity resolution, which asks whether a
+    -- candidate matches an existing Business Wise company.
+    CREATE TABLE IF NOT EXISTS source_records (
+      source_id TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      source_record_id TEXT,
+      candidate_id TEXT NOT NULL,
+      first_run_id TEXT NOT NULL,
+      first_ingested_at TEXT NOT NULL,
+      PRIMARY KEY (source_id, fingerprint),
+      FOREIGN KEY(candidate_id) REFERENCES candidates(id),
+      FOREIGN KEY(first_run_id) REFERENCES source_runs(id)
     );
   `);
 }
@@ -82,15 +119,21 @@ export function insertExistingCompany(db: Database, company: ExistingCompany): v
 export function insertCandidate(db: Database, candidate: CandidateCompany): void {
   db.query(`
     INSERT OR REPLACE INTO candidates
-      (id, source, source_url, captured_at, company_name, address, city, state,
+      (id, source, source_id, source_url, source_record_id, captured_at, ingested_at,
+       fingerprint, company_name, address, city, state,
        postal_code, phone, website, linkedin_url, employee_count_estimate,
-       description, proposed_sic, contact_name, contact_title, evidence_json, raw_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       description, proposed_sic, contact_name, contact_title, evidence_json,
+       raw_source_json, raw_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     candidate.id,
     candidate.source,
+    candidate.sourceId,
     candidate.sourceUrl ?? null,
+    candidate.sourceRecordId ?? null,
     candidate.capturedAt,
+    candidate.ingestedAt,
+    candidate.fingerprint,
     candidate.companyName,
     candidate.address ?? null,
     candidate.city ?? null,
@@ -105,8 +148,14 @@ export function insertCandidate(db: Database, candidate: CandidateCompany): void
     candidate.contactName ?? null,
     candidate.contactTitle ?? null,
     JSON.stringify(candidate.evidence),
+    candidate.rawSourceData !== undefined ? JSON.stringify(candidate.rawSourceData) : null,
     JSON.stringify(candidate)
   );
+}
+
+export function loadCandidates(db: Database): CandidateCompany[] {
+  const rows = db.query(`SELECT raw_json FROM candidates`).all() as Array<{ raw_json: string }>;
+  return rows.map((row) => JSON.parse(row.raw_json) as CandidateCompany);
 }
 
 export function loadExistingCompanies(db: Database): ExistingCompany[] {
@@ -156,5 +205,103 @@ export function upsertReviewQueue(
     completeness,
     priority,
     new Date().toISOString()
+  );
+}
+
+export type SourceRun = {
+  id: string;
+  sourceId: string;
+  sourceName: string;
+  startedAt: string;
+  finishedAt?: string;
+  status: "running" | "success" | "failed";
+  rawCount: number;
+  validCount: number;
+  newCandidateCount: number;
+  alreadyIngestedCount: number;
+  skippedCount: number;
+  errorMessage?: string;
+};
+
+export function startSourceRun(db: Database, run: Pick<SourceRun, "id" | "sourceId" | "sourceName" | "startedAt">): void {
+  db.query(`
+    INSERT INTO source_runs (id, source_id, source_name, started_at, status)
+    VALUES (?, ?, ?, ?, 'running')
+  `).run(run.id, run.sourceId, run.sourceName, run.startedAt);
+}
+
+export function finishSourceRun(
+  db: Database,
+  runId: string,
+  result: {
+    finishedAt: string;
+    status: "success" | "failed";
+    rawCount: number;
+    validCount: number;
+    newCandidateCount: number;
+    alreadyIngestedCount: number;
+    skippedCount: number;
+    errorMessage?: string;
+  }
+): void {
+  db.query(`
+    UPDATE source_runs SET
+      finished_at = ?,
+      status = ?,
+      raw_count = ?,
+      valid_count = ?,
+      new_candidate_count = ?,
+      already_ingested_count = ?,
+      skipped_count = ?,
+      error_message = ?
+    WHERE id = ?
+  `).run(
+    result.finishedAt,
+    result.status,
+    result.rawCount,
+    result.validCount,
+    result.newCandidateCount,
+    result.alreadyIngestedCount,
+    result.skippedCount,
+    result.errorMessage ?? null,
+    runId
+  );
+}
+
+export function findSourceRecord(
+  db: Database,
+  sourceId: string,
+  fingerprint: string
+): { candidateId: string } | undefined {
+  const row = db.query(`
+    SELECT candidate_id AS candidateId FROM source_records
+    WHERE source_id = ? AND fingerprint = ?
+  `).get(sourceId, fingerprint) as { candidateId: string } | null;
+
+  return row ?? undefined;
+}
+
+export function insertSourceRecord(
+  db: Database,
+  record: {
+    sourceId: string;
+    fingerprint: string;
+    sourceRecordId?: string;
+    candidateId: string;
+    firstRunId: string;
+    firstIngestedAt: string;
+  }
+): void {
+  db.query(`
+    INSERT OR IGNORE INTO source_records
+      (source_id, fingerprint, source_record_id, candidate_id, first_run_id, first_ingested_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    record.sourceId,
+    record.fingerprint,
+    record.sourceRecordId ?? null,
+    record.candidateId,
+    record.firstRunId,
+    record.firstIngestedAt
   );
 }

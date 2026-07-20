@@ -5,9 +5,11 @@
   "scripts": {
     "init": "bun run src/init.ts",
     "seed": "bun run src/seed.ts",
+    "ingest": "bun run src/ingest.ts",
     "run": "bun run src/run.ts",
     "queue": "bun run src/queue.ts",
-    "reset": "rm -f data/sandbox.sqlite && bun run init && bun run seed && bun run run"
+    "test": "bun test",
+    "reset": "rm -f data/sandbox.sqlite && bun run init && bun run seed && bun run ingest --source=dfw-json && bun run ingest --source=dfw-csv && bun run run"
   },
   "devDependencies": {
     "@types/bun": "latest"

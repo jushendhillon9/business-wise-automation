@@ -17,6 +17,9 @@ describe("dfw json adapter", () => {
         website: "westlinefreight.example",
         employeeCount: 55,
         sourceUrl: "https://dfwchamber.example/reports/2026/0001",
+        contactName: "Morgan Ellis",
+        contactTitle: "Operations Director",
+        contactEmail: "morgan.ellis@westlinefreight.example",
         publishedAt: "2026-07-14T09:00:00.000Z"
       }
     });
@@ -28,6 +31,9 @@ describe("dfw json adapter", () => {
     expect(result.candidate.employeeCountEstimate).toBe(55);
     expect(result.candidate.sourceRecordId).toBe("dfw-2026-0001");
     expect(result.candidate.rawSourceData).toBeDefined();
+    expect(result.candidate.contacts).toEqual([
+      { name: "Morgan Ellis", title: "Operations Director", email: "morgan.ellis@westlinefreight.example", phone: undefined }
+    ]);
   });
 
   test("keeps optional fields optional for a sparse record", () => {
@@ -42,6 +48,7 @@ describe("dfw json adapter", () => {
     expect(result.candidate.phone).toBeUndefined();
     expect(result.candidate.employeeCountEstimate).toBeUndefined();
     expect(result.candidate.address).toBeUndefined();
+    expect(result.candidate.contacts).toEqual([]);
   });
 
   test("rejects a record with no company name", () => {

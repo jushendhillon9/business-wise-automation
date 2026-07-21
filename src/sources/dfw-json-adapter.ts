@@ -1,3 +1,4 @@
+import type { Contact } from "../types.ts";
 import type { CandidateDraft, MappingResult, RawSourceRecord, SourceAdapter } from "./types.ts";
 
 const DEFAULT_FIXTURE_PATH = "data/sources/dfw-json-sample.json";
@@ -33,6 +34,16 @@ export function createDfwJsonAdapter(filePath: string = DEFAULT_FIXTURE_PATH): S
       if (typeof data.website === "string" && data.website) evidence.push("company website");
       if (typeof data.sourceUrl === "string" && data.sourceUrl) evidence.push("chamber report URL");
 
+      const contacts: Contact[] = [];
+      if (typeof data.contactName === "string" && data.contactName) {
+        contacts.push({
+          name: data.contactName,
+          title: typeof data.contactTitle === "string" ? data.contactTitle : undefined,
+          email: typeof data.contactEmail === "string" ? data.contactEmail : undefined,
+          phone: typeof data.contactPhone === "string" ? data.contactPhone : undefined
+        });
+      }
+
       const candidate: CandidateDraft = {
         sourceUrl: typeof data.sourceUrl === "string" ? data.sourceUrl : undefined,
         sourceRecordId: record.recordId,
@@ -46,6 +57,7 @@ export function createDfwJsonAdapter(filePath: string = DEFAULT_FIXTURE_PATH): S
         website: typeof data.website === "string" ? data.website : undefined,
         employeeCountEstimate: typeof data.employeeCount === "number" ? data.employeeCount : undefined,
         description: typeof data.notes === "string" ? data.notes : undefined,
+        contacts,
         evidence,
         rawSourceData: data
       };

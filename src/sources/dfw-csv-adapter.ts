@@ -1,3 +1,4 @@
+import type { Contact } from "../types.ts";
 import { parseCsvRecords } from "./csv.ts";
 import type { CandidateDraft, MappingResult, RawSourceRecord, SourceAdapter } from "./types.ts";
 
@@ -30,6 +31,15 @@ export function createDfwCsvAdapter(filePath: string = DEFAULT_FIXTURE_PATH): So
         return { ok: false, reason: "missing business_name" };
       }
 
+      const contacts: Contact[] = [];
+      if (data.contact_name || data.contact_email) {
+        contacts.push({
+          name: data.contact_name || undefined,
+          email: data.contact_email || undefined,
+          phone: data.contact_phone || undefined
+        });
+      }
+
       const candidate: CandidateDraft = {
         sourceRecordId: record.recordId,
         capturedAt: data.issued_date ? new Date(data.issued_date).toISOString() : new Date().toISOString(),
@@ -41,6 +51,7 @@ export function createDfwCsvAdapter(filePath: string = DEFAULT_FIXTURE_PATH): So
         phone: data.phone || undefined,
         website: data.website || undefined,
         employeeCountEstimate: data.employees ? Number(data.employees) || undefined : undefined,
+        contacts,
         evidence: ["county business license record"],
         rawSourceData: data
       };

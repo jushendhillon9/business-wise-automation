@@ -1,4 +1,6 @@
 import { Database } from "bun:sqlite";
+import type { PublicationReadinessResult } from "./publication-readiness.ts";
+import type { ResearchCompletenessResult } from "./scoring.ts";
 import type { CandidateCompany, ExistingCompany, MatchResult } from "./types.ts";
 
 export const DB_PATH = "data/sandbox.sqlite";
@@ -33,23 +35,38 @@ export function createSchema(db: Database): void {
       ingested_at TEXT NOT NULL,
       fingerprint TEXT NOT NULL,
       company_name TEXT NOT NULL,
+      dba_name TEXT,
+      phone TEXT,
+      toll_free_phone TEXT,
       address TEXT,
+      suite TEXT,
       city TEXT,
       state TEXT,
       postal_code TEXT,
-      phone TEXT,
-      website TEXT,
-      linkedin_url TEXT,
+      county TEXT,
+      mailing_address TEXT,
+      site_type TEXT,
       employee_count_estimate INTEGER,
-      description TEXT,
+      employee_size_company_wide INTEGER,
+      total_sites INTEGER,
+      start_year INTEGER,
+      estimated_annual_revenue REAL,
+      website TEXT,
+      email_format TEXT,
+      linkedin_url TEXT,
+      team_page_url TEXT,
       proposed_sic TEXT,
-      contact_name TEXT,
-      contact_title TEXT,
+      relationship_json TEXT,
+      description TEXT,
+      contacts_json TEXT NOT NULL DEFAULT '[]',
       evidence_json TEXT NOT NULL,
       raw_source_json TEXT,
       raw_json TEXT NOT NULL
     );
 
+    -- Publication readiness is a rule-based gate (see src/publication-readiness.ts),
+    -- not a weighted score. research completeness is a separate descriptive score
+    -- of how much we know. Neither implies the other, and neither implies approval.
     CREATE TABLE IF NOT EXISTS review_queue (
       candidate_id TEXT PRIMARY KEY,
       best_existing_company_id TEXT,
@@ -57,6 +74,11 @@ export function createSchema(db: Database): void {
       match_classification TEXT NOT NULL,
       match_reasons_json TEXT NOT NULL,
       completeness_score REAL NOT NULL,
+      completeness_present_fields_json TEXT NOT NULL DEFAULT '[]',
+      completeness_missing_fields_json TEXT NOT NULL DEFAULT '[]',
+      publication_ready INTEGER NOT NULL DEFAULT 0,
+      publication_blocking_reasons_json TEXT NOT NULL DEFAULT '[]',
+      publication_unresolved_requirements_json TEXT NOT NULL DEFAULT '[]',
       review_priority REAL NOT NULL,
       review_status TEXT NOT NULL DEFAULT 'pending',
       reviewer_note TEXT,
@@ -120,11 +142,12 @@ export function insertCandidate(db: Database, candidate: CandidateCompany): void
   db.query(`
     INSERT OR REPLACE INTO candidates
       (id, source, source_id, source_url, source_record_id, captured_at, ingested_at,
-       fingerprint, company_name, address, city, state,
-       postal_code, phone, website, linkedin_url, employee_count_estimate,
-       description, proposed_sic, contact_name, contact_title, evidence_json,
-       raw_source_json, raw_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       fingerprint, company_name, dba_name, phone, toll_free_phone, address, suite, city, state,
+       postal_code, county, mailing_address, site_type, employee_count_estimate,
+       employee_size_company_wide, total_sites, start_year, estimated_annual_revenue,
+       website, email_format, linkedin_url, team_page_url, proposed_sic, relationship_json,
+       description, contacts_json, evidence_json, raw_source_json, raw_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     candidate.id,
     candidate.source,
@@ -135,18 +158,30 @@ export function insertCandidate(db: Database, candidate: CandidateCompany): void
     candidate.ingestedAt,
     candidate.fingerprint,
     candidate.companyName,
+    candidate.dbaName ?? null,
+    candidate.phone ?? null,
+    candidate.tollFreePhone ?? null,
     candidate.address ?? null,
+    candidate.suite ?? null,
     candidate.city ?? null,
     candidate.state ?? null,
     candidate.postalCode ?? null,
-    candidate.phone ?? null,
-    candidate.website ?? null,
-    candidate.linkedinUrl ?? null,
+    candidate.county ?? null,
+    candidate.mailingAddress ?? null,
+    candidate.siteType ?? null,
     candidate.employeeCountEstimate ?? null,
-    candidate.description ?? null,
+    candidate.employeeSizeCompanyWide ?? null,
+    candidate.totalSites ?? null,
+    candidate.startYear ?? null,
+    candidate.estimatedAnnualRevenue ?? null,
+    candidate.website ?? null,
+    candidate.emailFormat ?? null,
+    candidate.linkedinUrl ?? null,
+    candidate.teamPageUrl ?? null,
     candidate.proposedSic ?? null,
-    candidate.contactName ?? null,
-    candidate.contactTitle ?? null,
+    candidate.relationship ? JSON.stringify(candidate.relationship) : null,
+    candidate.description ?? null,
+    JSON.stringify(candidate.contacts),
     JSON.stringify(candidate.evidence),
     candidate.rawSourceData !== undefined ? JSON.stringify(candidate.rawSourceData) : null,
     JSON.stringify(candidate)
@@ -181,20 +216,28 @@ export function upsertReviewQueue(
   db: Database,
   candidateId: string,
   match: MatchResult,
-  completeness: number,
+  completeness: ResearchCompletenessResult,
+  publicationReadiness: PublicationReadinessResult,
   priority: number
 ): void {
   db.query(`
     INSERT INTO review_queue
       (candidate_id, best_existing_company_id, match_score, match_classification,
-       match_reasons_json, completeness_score, review_priority, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       match_reasons_json, completeness_score, completeness_present_fields_json,
+       completeness_missing_fields_json, publication_ready, publication_blocking_reasons_json,
+       publication_unresolved_requirements_json, review_priority, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(candidate_id) DO UPDATE SET
       best_existing_company_id = excluded.best_existing_company_id,
       match_score = excluded.match_score,
       match_classification = excluded.match_classification,
       match_reasons_json = excluded.match_reasons_json,
       completeness_score = excluded.completeness_score,
+      completeness_present_fields_json = excluded.completeness_present_fields_json,
+      completeness_missing_fields_json = excluded.completeness_missing_fields_json,
+      publication_ready = excluded.publication_ready,
+      publication_blocking_reasons_json = excluded.publication_blocking_reasons_json,
+      publication_unresolved_requirements_json = excluded.publication_unresolved_requirements_json,
       review_priority = excluded.review_priority
   `).run(
     candidateId,
@@ -202,7 +245,12 @@ export function upsertReviewQueue(
     match.score,
     match.classification,
     JSON.stringify(match.reasons),
-    completeness,
+    completeness.score,
+    JSON.stringify(completeness.presentFields),
+    JSON.stringify(completeness.missingFields),
+    publicationReadiness.ready ? 1 : 0,
+    JSON.stringify(publicationReadiness.blockingReasons),
+    JSON.stringify(publicationReadiness.unresolvedRequirements),
     priority,
     new Date().toISOString()
   );

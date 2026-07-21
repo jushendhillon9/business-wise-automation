@@ -71,6 +71,7 @@ describe("runIngestion", () => {
             sourceRecordId: record.recordId,
             capturedAt: new Date().toISOString(),
             companyName: data.companyName,
+            contacts: [],
             evidence: ["mock chamber source"]
           }
         };
@@ -91,6 +92,7 @@ describe("runIngestion", () => {
             sourceRecordId: record.recordId,
             capturedAt: new Date().toISOString(),
             companyName: data.companyName,
+            contacts: [],
             evidence: ["mock business journal source"]
           }
         };

@@ -11,6 +11,9 @@
     "employeeCount": 55,
     "sourceUrl": "https://dfwchamber.example/reports/2026/0001",
     "notes": "Freight brokerage expanding with new DFW headquarters",
+    "contactName": "Morgan Ellis",
+    "contactTitle": "Operations Director",
+    "contactEmail": "morgan.ellis@westlinefreight.example",
     "publishedAt": "2026-07-14T09:00:00.000Z"
   },
   {

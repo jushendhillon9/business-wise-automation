@@ -16,7 +16,9 @@ describe("dfw csv adapter", () => {
         phone: "972-555-0161",
         website: "ridgelineprecision.example",
         employees: "34",
-        issued_date: "2026-06-02"
+        issued_date: "2026-06-02",
+        contact_name: "Dana Whitfield",
+        contact_email: "dana.whitfield@ridgelineprecision.example"
       }
     });
 
@@ -25,6 +27,9 @@ describe("dfw csv adapter", () => {
     expect(result.candidate.companyName).toBe("Ridgeline Precision Machining");
     expect(result.candidate.employeeCountEstimate).toBe(34);
     expect(result.candidate.sourceRecordId).toBe("DCL-88231");
+    expect(result.candidate.contacts).toEqual([
+      { name: "Dana Whitfield", email: "dana.whitfield@ridgelineprecision.example", phone: undefined }
+    ]);
   });
 
   test("rejects a row with no business name", () => {
@@ -35,6 +40,18 @@ describe("dfw csv adapter", () => {
     });
 
     expect(result.ok).toBe(false);
+  });
+
+  test("a row with no contact columns produces no contacts", () => {
+    const adapter = createDfwCsvAdapter();
+    const result = adapter.toCandidate({
+      recordId: "DCL-88233",
+      data: { license_id: "DCL-88233", business_name: "Summit Peak Electrical Services", city: "North Richland Hills", state: "TX" }
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.candidate.contacts).toEqual([]);
   });
 
   test("fetch parses the fixture CSV, including quoted fields", async () => {

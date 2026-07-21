@@ -1,4 +1,4 @@
-import { createSchema, loadCandidates, loadExistingCompanies, openDb, upsertReviewQueue } from "./db.ts";
+import { createSchema, loadExistingCompanies, loadLocationCandidates, openDb, upsertReviewQueue } from "./db.ts";
 import { findBestMatch } from "./entity-resolution.ts";
 import { evaluatePublicationReadiness } from "./publication-readiness.ts";
 import { researchCompleteness, reviewPriority } from "./scoring.ts";
@@ -6,9 +6,9 @@ import { researchCompleteness, reviewPriority } from "./scoring.ts";
 const db = openDb();
 createSchema(db);
 const existingCompanies = loadExistingCompanies(db);
-const candidates = loadCandidates(db);
+const locationCandidates = loadLocationCandidates(db);
 
-for (const candidate of candidates) {
+for (const candidate of locationCandidates) {
   const bestMatch = findBestMatch(candidate, existingCompanies);
   const completeness = researchCompleteness(candidate);
   const publicationReadiness = evaluatePublicationReadiness(candidate);
@@ -17,4 +17,4 @@ for (const candidate of candidates) {
 }
 
 db.close();
-console.log(`Processed ${candidates.length} candidate companies into the review queue.`);
+console.log(`Processed ${locationCandidates.length} location candidates into the review queue.`);

@@ -1,12 +1,14 @@
-import type { Contact } from "../types.ts";
-import type { CandidateDraft, MappingResult, RawSourceRecord, SourceAdapter } from "./types.ts";
+import { asEstimate, type Address, type Contact } from "../types.ts";
+import type { LocationCandidateDraft, MappingResult, RawSourceRecord, SourceAdapter } from "./types.ts";
 
 const DEFAULT_FIXTURE_PATH = "data/sources/dfw-json-sample.json";
 
 /**
  * Local fixture adapter standing in for a future DFW chamber/business-journal
  * style JSON export. Proves the SourceAdapter shape until Emily's real feed
- * is available.
+ * is available. Maps each raw row into one provisional CompanyIdentity +
+ * LocationCandidate — the ingestion engine (source-agnostic) has no idea
+ * this is DFW-specific JSON.
  */
 export function createDfwJsonAdapter(filePath: string = DEFAULT_FIXTURE_PATH): SourceAdapter {
   return {
@@ -44,18 +46,27 @@ export function createDfwJsonAdapter(filePath: string = DEFAULT_FIXTURE_PATH): S
         });
       }
 
-      const candidate: CandidateDraft = {
+      const physicalAddress: Address | undefined =
+        data.address || data.city || data.state || data.postalCode
+          ? {
+              street: typeof data.address === "string" ? data.address : undefined,
+              city: typeof data.city === "string" ? data.city : undefined,
+              state: typeof data.state === "string" ? data.state : undefined,
+              postalCode: typeof data.postalCode === "string" ? data.postalCode : undefined
+            }
+          : undefined;
+
+      const candidate: LocationCandidateDraft = {
         sourceUrl: typeof data.sourceUrl === "string" ? data.sourceUrl : undefined,
-        sourceRecordId: record.recordId,
         capturedAt: typeof data.publishedAt === "string" ? data.publishedAt : new Date().toISOString(),
-        companyName,
-        address: typeof data.address === "string" ? data.address : undefined,
-        city: typeof data.city === "string" ? data.city : undefined,
-        state: typeof data.state === "string" ? data.state : undefined,
-        postalCode: typeof data.postalCode === "string" ? data.postalCode : undefined,
+        company: {
+          legalName: companyName,
+          website: typeof data.website === "string" ? data.website : undefined
+        },
+        physicalAddress,
         phone: typeof data.phone === "string" ? data.phone : undefined,
-        website: typeof data.website === "string" ? data.website : undefined,
-        employeeCountEstimate: typeof data.employeeCount === "number" ? data.employeeCount : undefined,
+        market: "DFW",
+        employeeSizeSite: typeof data.employeeCount === "number" ? asEstimate(data.employeeCount) : undefined,
         description: typeof data.notes === "string" ? data.notes : undefined,
         contacts,
         evidence,

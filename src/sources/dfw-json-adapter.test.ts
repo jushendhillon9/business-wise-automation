@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createDfwJsonAdapter } from "./dfw-json-adapter.ts";
 
 describe("dfw json adapter", () => {
-  test("maps a full record into a candidate draft", () => {
+  test("maps a full record into company + location drafts", () => {
     const adapter = createDfwJsonAdapter();
     const result = adapter.toCandidate({
       recordId: "dfw-2026-0001",
@@ -26,10 +26,14 @@ describe("dfw json adapter", () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.candidate.companyName).toBe("Westline Freight Solutions");
-    expect(result.candidate.city).toBe("Irving");
-    expect(result.candidate.employeeCountEstimate).toBe(55);
-    expect(result.candidate.sourceRecordId).toBe("dfw-2026-0001");
+    // company-level fields land on candidate.company
+    expect(result.candidate.company.legalName).toBe("Westline Freight Solutions");
+    expect(result.candidate.company.website).toBe("westlinefreight.example");
+    // location-level fields land on the candidate itself
+    expect(result.candidate.physicalAddress?.city).toBe("Irving");
+    expect(result.candidate.employeeSizeSite?.estimate).toBe(55);
+    expect(result.candidate.market).toBe("DFW");
+    expect(result.candidate.sourceUrl).toBe("https://dfwchamber.example/reports/2026/0001");
     expect(result.candidate.rawSourceData).toBeDefined();
     expect(result.candidate.contacts).toEqual([
       { name: "Morgan Ellis", title: "Operations Director", email: "morgan.ellis@westlinefreight.example", phone: undefined }
@@ -46,8 +50,9 @@ describe("dfw json adapter", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.candidate.phone).toBeUndefined();
-    expect(result.candidate.employeeCountEstimate).toBeUndefined();
-    expect(result.candidate.address).toBeUndefined();
+    expect(result.candidate.employeeSizeSite).toBeUndefined();
+    expect(result.candidate.physicalAddress?.street).toBeUndefined();
+    expect(result.candidate.physicalAddress?.city).toBe("Grapevine");
     expect(result.candidate.contacts).toEqual([]);
   });
 

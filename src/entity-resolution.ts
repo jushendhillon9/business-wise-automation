@@ -5,19 +5,41 @@ import {
   normalizeDomain,
   normalizePhone
 } from "./normalize.ts";
-import type { CandidateCompany, ExistingCompany, MatchResult } from "./types.ts";
+import type { ExistingCompany, LocationCandidate, MatchResult } from "./types.ts";
 
+/**
+ * Compares one LocationCandidate against one known ExistingCompany,
+ * reasoning separately about company-level evidence (name, domain, SIC —
+ * facts that should hold regardless of which location we're looking at) and
+ * location-level evidence (address, phone, city/state — facts specific to
+ * this physical site). The overall score/classification formula is
+ * unchanged from the prior flat-model version; only the field sources and
+ * the addition of structured evidence are new. Keeping companySimilarity
+ * and locationSimilarity separate lets future work derive richer outcomes
+ * (same_existing_location, new_branch_of_existing_company,
+ * headquarters_move) without reworking the matching evidence again.
+ */
 export function scoreCandidateAgainstExisting(
-  candidate: CandidateCompany,
+  candidate: LocationCandidate,
   existing: ExistingCompany
 ): MatchResult {
   const reasons: string[] = [];
 
-  const candidateName = normalizeCompanyName(candidate.companyName);
+  // Company-level evidence.
+  const candidateName = normalizeCompanyName(candidate.company.legalName);
   const existingName = normalizeCompanyName(existing.companyName);
   const nameScore = diceSimilarity(candidateName, existingName);
 
-  const candidateAddress = normalizeAddress(candidate.address);
+  const candidateDomain = normalizeDomain(candidate.company.website);
+  const existingDomain = normalizeDomain(existing.website);
+  const domainMatch = Boolean(candidateDomain && existingDomain && candidateDomain === existingDomain);
+
+  const sicMatch = Boolean(
+    candidate.company.sicCode && existing.sicCode && candidate.company.sicCode === existing.sicCode
+  );
+
+  // Location-level evidence.
+  const candidateAddress = normalizeAddress(candidate.physicalAddress?.street);
   const existingAddress = normalizeAddress(existing.address);
   const addressScore = candidateAddress && existingAddress
     ? diceSimilarity(candidateAddress, existingAddress)
@@ -25,26 +47,33 @@ export function scoreCandidateAgainstExisting(
 
   const candidatePhone = normalizePhone(candidate.phone);
   const existingPhone = normalizePhone(existing.phone);
-  const phoneExact = Boolean(candidatePhone && existingPhone && candidatePhone === existingPhone);
+  const phoneMatch = Boolean(candidatePhone && existingPhone && candidatePhone === existingPhone);
 
-  const candidateDomain = normalizeDomain(candidate.website);
-  const existingDomain = normalizeDomain(existing.website);
-  const domainExact = Boolean(candidateDomain && existingDomain && candidateDomain === existingDomain);
+  const cityStateMatch = Boolean(
+    candidate.physicalAddress?.city &&
+    candidate.physicalAddress?.state &&
+    existing.city &&
+    existing.state &&
+    candidate.physicalAddress.city.trim().toLowerCase() === existing.city.trim().toLowerCase() &&
+    candidate.physicalAddress.state.trim().toLowerCase() === existing.state.trim().toLowerCase()
+  );
 
   let score = nameScore * 0.5 + addressScore * 0.3;
-  if (phoneExact) score += 0.15;
-  if (domainExact) score += 0.05;
+  if (phoneMatch) score += 0.15;
+  if (domainMatch) score += 0.05;
 
-  if (phoneExact) reasons.push("exact phone match");
-  if (domainExact) reasons.push("exact website domain match");
+  if (phoneMatch) reasons.push("exact phone match");
+  if (domainMatch) reasons.push("exact website domain match");
+  if (sicMatch) reasons.push("matching SIC code");
+  if (cityStateMatch) reasons.push("matching city/state");
   if (nameScore >= 0.9) reasons.push("very similar normalized company name");
   else if (nameScore >= 0.7) reasons.push("similar normalized company name");
   if (addressScore >= 0.9) reasons.push("very similar normalized address");
   else if (addressScore >= 0.7) reasons.push("similar normalized address");
 
   // Exact phone is a powerful duplicate signal in the current BW workflow.
-  if (phoneExact && nameScore >= 0.65) score = Math.max(score, 0.93);
-  if (domainExact && nameScore >= 0.8) score = Math.max(score, 0.9);
+  if (phoneMatch && nameScore >= 0.65) score = Math.max(score, 0.93);
+  if (domainMatch && nameScore >= 0.8) score = Math.max(score, 0.9);
 
   score = Math.min(1, Number(score.toFixed(4)));
 
@@ -57,6 +86,8 @@ export function scoreCandidateAgainstExisting(
 
   return {
     existingCompanyId: existing.id,
+    companySimilarity: { nameScore, domainMatch, sicMatch },
+    locationSimilarity: { addressScore, phoneMatch, cityStateMatch },
     score,
     classification,
     reasons
@@ -64,11 +95,13 @@ export function scoreCandidateAgainstExisting(
 }
 
 export function findBestMatch(
-  candidate: CandidateCompany,
+  candidate: LocationCandidate,
   existingCompanies: ExistingCompany[]
 ): MatchResult {
   if (existingCompanies.length === 0) {
     return {
+      companySimilarity: { nameScore: 0, domainMatch: false, sicMatch: false },
+      locationSimilarity: { addressScore: 0, phoneMatch: false, cityStateMatch: false },
       score: 0,
       classification: "likely_new",
       reasons: ["no comparison records available"]

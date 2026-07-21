@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createDfwCsvAdapter } from "./dfw-csv-adapter.ts";
 
 describe("dfw csv adapter", () => {
-  test("maps a full CSV row into a candidate draft", () => {
+  test("maps a full CSV row into company + location drafts", () => {
     const adapter = createDfwCsvAdapter();
     const result = adapter.toCandidate({
       recordId: "DCL-88231",
@@ -24,9 +24,11 @@ describe("dfw csv adapter", () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.candidate.companyName).toBe("Ridgeline Precision Machining");
-    expect(result.candidate.employeeCountEstimate).toBe(34);
-    expect(result.candidate.sourceRecordId).toBe("DCL-88231");
+    expect(result.candidate.company.legalName).toBe("Ridgeline Precision Machining");
+    expect(result.candidate.company.website).toBe("ridgelineprecision.example");
+    expect(result.candidate.physicalAddress?.city).toBe("Carrollton");
+    expect(result.candidate.employeeSizeSite?.estimate).toBe(34);
+    expect(result.candidate.market).toBe("DFW");
     expect(result.candidate.contacts).toEqual([
       { name: "Dana Whitfield", email: "dana.whitfield@ridgelineprecision.example", phone: undefined }
     ]);

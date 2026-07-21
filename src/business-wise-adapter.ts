@@ -1,4 +1,4 @@
-import type { CandidateCompany, ExistingCompany } from "./types.ts";
+import type { ExistingCompany, LocationCandidate } from "./types.ts";
 
 /**
  * Integration boundary for the real Business Wise architecture.
@@ -6,6 +6,6 @@ import type { CandidateCompany, ExistingCompany } from "./types.ts";
  * Rif/Randall discovery determines the production implementation later.
  */
 export interface BusinessWiseAdapter {
-  searchPotentialMatches(candidate: CandidateCompany): Promise<ExistingCompany[]>;
-  stageApprovedCandidate(candidate: CandidateCompany): Promise<{ stagedId: string }>;
+  searchPotentialMatches(candidate: LocationCandidate): Promise<ExistingCompany[]>;
+  stageApprovedCandidate(candidate: LocationCandidate): Promise<{ stagedId: string }>;
 }

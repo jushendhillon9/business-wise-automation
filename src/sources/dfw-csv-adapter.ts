@@ -1,13 +1,15 @@
-import type { Contact } from "../types.ts";
+import { asEstimate, type Address, type Contact } from "../types.ts";
 import { parseCsvRecords } from "./csv.ts";
-import type { CandidateDraft, MappingResult, RawSourceRecord, SourceAdapter } from "./types.ts";
+import type { LocationCandidateDraft, MappingResult, RawSourceRecord, SourceAdapter } from "./types.ts";
 
 const DEFAULT_FIXTURE_PATH = "data/sources/dfw-county-licenses-sample.csv";
 
 /**
  * Local fixture adapter standing in for a future county business-license CSV
  * export. Proves the SourceAdapter shape until a real license dataset is
- * wired in.
+ * wired in. Maps each raw row into one provisional CompanyIdentity +
+ * LocationCandidate — the ingestion engine (source-agnostic) has no idea
+ * this is DFW-specific CSV.
  */
 export function createDfwCsvAdapter(filePath: string = DEFAULT_FIXTURE_PATH): SourceAdapter {
   return {
@@ -40,17 +42,27 @@ export function createDfwCsvAdapter(filePath: string = DEFAULT_FIXTURE_PATH): So
         });
       }
 
-      const candidate: CandidateDraft = {
-        sourceRecordId: record.recordId,
+      const physicalAddress: Address | undefined =
+        data.address || data.city || data.state || data.zip
+          ? {
+              street: data.address || undefined,
+              city: data.city || undefined,
+              state: data.state || undefined,
+              postalCode: data.zip || undefined
+            }
+          : undefined;
+
+      const candidate: LocationCandidateDraft = {
         capturedAt: data.issued_date ? new Date(data.issued_date).toISOString() : new Date().toISOString(),
-        companyName,
-        address: data.address || undefined,
-        city: data.city || undefined,
-        state: data.state || undefined,
-        postalCode: data.zip || undefined,
+        company: {
+          legalName: companyName,
+          website: data.website || undefined
+        },
+        physicalAddress,
         phone: data.phone || undefined,
-        website: data.website || undefined,
-        employeeCountEstimate: data.employees ? Number(data.employees) || undefined : undefined,
+        market: "DFW",
+        county: data.county || undefined,
+        employeeSizeSite: data.employees ? asEstimate(Number(data.employees) || undefined) : undefined,
         contacts,
         evidence: ["county business license record"],
         rawSourceData: data

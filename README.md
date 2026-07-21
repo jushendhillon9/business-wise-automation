@@ -2,6 +2,13 @@
 
 A safe, local vertical slice for the proposed DFW automated new-company intake pilot.
 
+> **Authoritative domain reference:** [`docs/BWI_DOMAIN_RULES.md`](docs/BWI_DOMAIN_RULES.md) consolidates everything
+> currently known about how Business Wise represents, researches, completes, publishes, and exposes company data —
+> evidence-labeled Confirmed/Conditional/Inferred/Unresolved. When this README and that document disagree, the
+> domain-rules document wins; this README (and `docs/COMPANY_LOCATION_MODEL.md`) describe what the code currently
+> implements, which is intentionally a subset of it. See `docs/COMPANY_LOCATION_MODEL.md`'s "Known gaps vs.
+> BWI_DOMAIN_RULES.md" section for the specific, tracked differences.
+
 ## What this proves first
 
 `source observation -> company identity + location candidate -> entity-resolution score -> prioritized human review queue`
@@ -59,30 +66,41 @@ and **none of them is approval** — a human still reviews and approves or rejec
 ### Publication readiness rules currently implemented
 
 Emily's "AI Research" document marks required fields in bold and optional fields in italics, but the parsed text we
-have does not reliably preserve that formatting. Rather than guess a full required-field list from unreliable
-formatting, `evaluatePublicationReadiness()` only treats a rule as blocking (`confirmed_required`) when the document
-states it explicitly:
+originally had did not reliably preserve that formatting. Rather than guess a full required-field list from
+unreliable formatting, `evaluatePublicationReadiness()` only treats a rule as blocking (`confirmed_required`) when
+we were confident it was actually required:
 
-- **`min_one_contact`** — at least one contact with a name or email is required to publish. (Explicit in the
-  document.)
+- **`min_one_contact`** — at least one contact with a name or email is required to publish. (Explicit in
+  `docs/BWI_DOMAIN_RULES.md` §7.)
 - **`company_name_present`** — defensive check; ingestion should already guarantee this.
 
-Everything else Emily's document lists as a BW key field — local phone (with the "000-000-0000 means confirmed but
-non-published" exception), physical address (with the "Not Listed allowed only with known ZIP + valid mailing
+Everything else the domain reference lists as a BW key field — local phone (with the "000-000-0000 means confirmed
+but non-published" exception), physical address (with the "Not Listed allowed only with known ZIP + valid mailing
 address" exception), SIC code, website, Site Type — is modeled and reported as `status: "unresolved"`:
-it shows up in `unresolvedRequirements` when missing, but **never blocks `ready`**, because we don't yet know if it's
-actually a bold/required field. Promote a rule from `unresolved` to `confirmed_required` in
-`src/publication-readiness.ts` once Emily/Rif/Randall confirm it, or once the original document formatting is
-inspected directly — that's the one place these rules live.
+it shows up in `unresolvedRequirements` when missing, but **never blocks `ready`**.
+
+> **Known contradiction, not yet resolved in code:** `docs/BWI_DOMAIN_RULES.md` §8.2 now lists the blank BWI "New
+> Company Profile"'s confirmed base blockers with **Confirmed** evidence status (from a screenshot showing required
+> fields in green) — company name, alphasort, physical address (or exception), mailing address (or exception), local
+> phone (or exception), building type, site type, employee-size band, start year, SIC code/description, and at least
+> one contact. That is a materially larger confirmed-required set than the two rules implemented today. Per this
+> project's change-control rule (`docs/BWI_DOMAIN_RULES.md` §25), promoting the rest of §8.2 from `unresolved` to
+> `confirmed_required` — and adding the unmodeled fields (alphasort, start year check, building type check) — is a
+> deliberate code change for a later numbered task, not done automatically just because the reference document says
+> so. See `docs/COMPANY_LOCATION_MODEL.md` → "Known gaps vs. BWI_DOMAIN_RULES.md" for the full breakdown.
 
 ### Known BWI status discrepancy — unresolved
 
-Emily's document defines three status acronyms: **DIRE** (active/complete record published to the client app),
-**DEL** (previously published, now deleted), and **RDEL** (added for research but never completed/published). The
-earlier discovery notes already in this repo instead used **`RDL`** and a **`research`** status for the same-ish
-concepts. `ExistingCompany.status` (`src/types.ts`) keeps all five values (`DIRE | DEL | RDEL | RDL | research`)
+`docs/BWI_DOMAIN_RULES.md` §4 defines three status acronyms: **DIRE** (active/complete record published to the
+client app), **DEL** (previously published, now deleted), and **RDL or RDEL** (research delete; never published —
+"Unresolved spelling" per that document, and open domain question §23.1). The earlier discovery notes already in
+this repo used **`RDL`** and a plain **`research`** status for the same-ish concepts (also open question §23.2).
+`ExistingCompany.status` (`src/types.ts`) keeps all five raw-looking values (`DIRE | DEL | RDEL | RDL | research`)
 rather than silently normalizing one to the other — this is flagged as unresolved domain configuration until
-Emily/Rif/Randall confirm which strings BW's system actually persists.
+Emily/Rif/Randall confirm which strings BW's system actually persists. `docs/BWI_DOMAIN_RULES.md` §4 additionally
+recommends preserving a raw `rawBwiStatus: string` mapped separately to a normalized lifecycle enum
+(`published`/`research`/`research_deleted`/`deleted`); the code does not yet implement that normalized/raw split —
+tracked in `docs/COMPANY_LOCATION_MODEL.md`'s gaps section.
 
 ## Source ingestion layer
 
@@ -214,14 +232,17 @@ See **`docs/COMPANY_LOCATION_MODEL.md`** for the company-identity/location-candi
 
 ## Next engineering steps
 
+`docs/BWI_DOMAIN_RULES.md` §23 ("Open domain questions") is the authoritative backlog of what needs confirming from
+Emily/Jen/Rif/Randall before more rules can move from `unresolved` to implemented. The steps below are the
+code-focused follow-ups building on that:
+
 1. Plug in a real DFW source (chamber report export, business journal feed, or county license dataset) behind a new `SourceAdapter`.
-2. Confirm the actual bold/italic required-field list with Emily (or by inspecting the original document formatting directly) and promote the corresponding rules in `src/publication-readiness.ts` from `unresolved` to `confirmed_required`.
-3. Confirm which BWI status strings (`DIRE`/`DEL`/`RDEL` vs. `RDL`/`research`) are actually persisted, and collapse `ExistingCompanyStatus` accordingly.
-4. Add field-level evidence provenance so every proposed value can be inspected by Emily/Jen.
+2. Promote the broader confirmed-required set in `docs/BWI_DOMAIN_RULES.md` §8.2 (physical address, local phone, SIC, site type, building type, alphasort, start year) from `unresolved`/unmodeled to `confirmed_required` in `src/publication-readiness.ts`, once the team decides the evidence in §8.2 is sufficient to act on — see `docs/COMPANY_LOCATION_MODEL.md`'s gaps section for the current state.
+3. Resolve which BWI status strings (`DIRE`/`DEL`/`RDEL` vs. `RDL`/`research`) are actually persisted (`docs/BWI_DOMAIN_RULES.md` §23.1–2), and either collapse `ExistingCompanyStatus` accordingly or implement the recommended raw/normalized lifecycle split from §4.
+4. Add field-level evidence provenance (`FieldEvidence<T>` per `docs/BWI_DOMAIN_RULES.md` §15) so every proposed value can be inspected by Emily/Jen.
 5. Add enrichment adapters for website, LinkedIn/team pages, phone/email validation, and SIC proposal.
 6. Evaluate entity-resolution thresholds against Emily's manual judgments on a labeled sample.
-7. Use the `companySimilarity`/`locationSimilarity` split in `MatchResult` to derive richer outcomes (same existing
-   location, new branch of an existing company, headquarters move) once there's a labeled sample to validate against.
+7. Use the `companySimilarity`/`locationSimilarity` split in `MatchResult` to derive the richer outcome taxonomy in `docs/BWI_DOMAIN_RULES.md` §12.4 (same existing location, new branch of an existing company, headquarters move, ...) once there's a labeled sample to validate against.
 8. Build a simple review UI only after the candidate schema and review decisions stabilize.
 9. Implement the production `BusinessWiseAdapter` after Rif/Randall confirm architecture and write boundaries.
 

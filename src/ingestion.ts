@@ -36,7 +36,8 @@ export type IngestionSummary = {
  * every valid, not-yet-seen source item gets its own fresh CompanyIdentity.
  * Deciding whether two provisional identities are the same real-world
  * company is entity resolution's job, done later (see
- * docs/COMPANY_LOCATION_MODEL.md).
+ * docs/COMPANY_LOCATION_MODEL.md and docs/BWI_DOMAIN_RULES.md §18, which
+ * this behavior matches: "ingestion must not perform company mastering").
  */
 export async function runIngestion(db: Database, adapter: SourceAdapter): Promise<IngestionSummary> {
   const runId = crypto.randomUUID();

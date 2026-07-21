@@ -59,7 +59,7 @@ export const BW_CODE_TO_SITE_TYPE: Record<BwSiteTypeCode, SiteType> = {
   R: "regional_headquarters"
 };
 
-/** Corporate relationship fields from Emily's document. All unconfirmed as publication-blocking. */
+/** Corporate relationship fields (see docs/BWI_DOMAIN_RULES.md §6.1 and §12.5). All unconfirmed as publication-blocking. */
 export type Relationship = {
   parentCompany?: string;
   affiliate?: string;
@@ -191,12 +191,16 @@ export type LocationCandidate = {
 };
 
 /**
- * Emily's document defines DIRE (published/active), DEL (previously published,
- * now deleted), and RDEL (added for research but never completed/published).
- * Earlier discovery notes in this repo instead used "RDL" and a "research"
- * status. That discrepancy is NOT resolved — do not silently normalize one to
- * the other. All four values are kept below until Emily/Rif/Randall confirm
- * which strings are actually persisted in BW's system.
+ * docs/BWI_DOMAIN_RULES.md §4 defines DIRE (published/active), DEL (previously
+ * published, now deleted), and RDL/RDEL (research delete, never published —
+ * "Unresolved spelling" per that document). Earlier discovery notes in this
+ * repo instead used "RDL" and a plain "research" status. That discrepancy is
+ * NOT resolved — do not silently normalize one to the other; see open domain
+ * questions §23.1–2. All five raw-looking values are kept below until
+ * Emily/Rif/Randall confirm which strings are actually persisted in BW's
+ * system. §4 also recommends preserving a raw `rawBwiStatus: string` mapped
+ * separately to a normalized lifecycle enum — not yet implemented here, see
+ * docs/COMPANY_LOCATION_MODEL.md's gaps section.
  */
 export type ExistingCompanyStatus = "DIRE" | "DEL" | "RDEL" | "RDL" | "research";
 

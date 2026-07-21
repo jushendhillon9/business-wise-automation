@@ -8,16 +8,23 @@ import {
 import type { ExistingCompany, LocationCandidate, MatchResult } from "./types.ts";
 
 /**
- * Compares one LocationCandidate against one known ExistingCompany,
- * reasoning separately about company-level evidence (name, domain, SIC —
- * facts that should hold regardless of which location we're looking at) and
- * location-level evidence (address, phone, city/state — facts specific to
- * this physical site). The overall score/classification formula is
- * unchanged from the prior flat-model version; only the field sources and
- * the addition of structured evidence are new. Keeping companySimilarity
- * and locationSimilarity separate lets future work derive richer outcomes
- * (same_existing_location, new_branch_of_existing_company,
- * headquarters_move) without reworking the matching evidence again.
+ * Compares one LocationCandidate against one known ExistingCompany (what
+ * docs/BWI_DOMAIN_RULES.md §2 calls an "ExistingLocation" — see the naming
+ * note in docs/COMPANY_LOCATION_MODEL.md), reasoning separately about
+ * company-level evidence (name, domain, SIC — facts that should hold
+ * regardless of which location we're looking at) and location-level
+ * evidence (address, phone, city/state — facts specific to this physical
+ * site), per the comparison layers in docs/BWI_DOMAIN_RULES.md §12.2. That
+ * section also lists parent/affiliate relationship and start year as
+ * company-similarity signals, and market/county/ZIP as location-similarity
+ * signals; those are not yet compared here (see docs/COMPANY_LOCATION_MODEL.md's
+ * gaps section). The overall score/classification formula is unchanged from
+ * the prior flat-model version; only the field sources and the addition of
+ * structured evidence are new. Keeping companySimilarity and
+ * locationSimilarity separate lets future work derive the richer outcome
+ * taxonomy in docs/BWI_DOMAIN_RULES.md §12.4 (same_existing_location,
+ * new_branch_of_existing_company, headquarters_move, ...) without reworking
+ * the matching evidence again.
  */
 export function scoreCandidateAgainstExisting(
   candidate: LocationCandidate,

@@ -1,5 +1,11 @@
 # Company identity + location candidate model
 
+**Authoritative domain reference:** [`docs/BWI_DOMAIN_RULES.md`](./BWI_DOMAIN_RULES.md) is the consolidated source of
+truth for Business Wise domain facts (evidence-labeled Confirmed/Conditional/Inferred/Unresolved). This document
+explains the `CompanyIdentity`/`LocationCandidate` split those rules motivated, and tracks where the current
+implementation is intentionally a subset of what that document describes — see
+["Known gaps vs. BWI_DOMAIN_RULES.md"](#known-gaps-vs-bwi_domain_rulesmd) below.
+
 ## Why Business Wise needs this split
 
 Business Wise is location-centric: the same real-world company can have a headquarters, one or more branches, a
@@ -60,7 +66,15 @@ ingestion doesn't exercise that yet (see below).
 
 `Contact`, `Address` (used for both `physicalAddress` and `mailingAddress`), and the banded `EmployeeSizeValue` /
 `RevenueValue` (`{ estimate, minimum, maximum, bandLabel, rawCode }`) are shared, general-purpose types — see
-`src/types.ts`.
+`src/types.ts`. The `EmployeeSizeValue`/`RevenueValue` shapes match `docs/BWI_DOMAIN_RULES.md` §11 exactly.
+
+**Naming note:** `docs/BWI_DOMAIN_RULES.md` §2 refers to the entity-resolution comparison target as
+`LocationCandidate / ExistingLocation`. This codebase's existing-record type is named `ExistingCompany`
+(`src/types.ts`) — despite the name, it already represents one existing BWI *location* row (it carries
+address/city/state/phone, not a company-wide identity), so it is conceptually what the domain-rules document calls
+`ExistingLocation`. The name predates this document and has not been renamed as part of this documentation pass, to
+avoid unnecessary churn to `entity-resolution.ts`, `db.ts`, and their tests. A rename to `ExistingLocation` is a
+reasonable candidate for a future, code-focused task.
 
 ## Why ingestion does not merge company identities
 
@@ -115,7 +129,8 @@ logic again, for example:
   → possibly a *headquarters move*
 
 None of those richer outcomes are implemented yet — this task only lays the groundwork (see the project's
-non-goals).
+non-goals). `docs/BWI_DOMAIN_RULES.md` §12.4 explicitly confirms this is intentional: "The current code may retain
+simpler classifications until Task 4, but its evidence structure must support these richer outcomes."
 
 ## Current end-to-end local workflow
 
@@ -127,3 +142,66 @@ bun run queue
 
 `bun run queue` still shows one row per `LocationCandidate`. See the README for the full command list and the
 distinction between entity resolution, research completeness, publication readiness, and review priority.
+
+## Known gaps vs. BWI_DOMAIN_RULES.md
+
+`docs/BWI_DOMAIN_RULES.md` is a broader, more detailed domain reference than what Project 1 currently implements —
+by design. Per its own §25 change-control rule, a newly confirmed fact should update that document first, then the
+domain type or rule evaluator, then tests. This section is the reverse index: where the implementation is
+intentionally a subset of (or a simpler encoding of) what that document describes, tracked here rather than silently
+implemented or silently ignored.
+
+### Contradiction worth flagging: publication-readiness confirmed-required set
+
+`BWI_DOMAIN_RULES.md` §8.2 lists the blank BWI **New Company Profile**'s confirmed base blockers (evidence-labeled
+Confirmed, from a screenshot showing required fields in green): company name, alphasort, physical address (or
+approved exception), mailing address (or approved exception), local phone (or approved exception), building type,
+site type, employee-size band at this site, start year, SIC code/description, and at least one meaningful contact.
+
+`src/publication-readiness.ts` currently only treats **two** of those as `confirmed_required`
+(`min_one_contact`, `company_name_present`). Local phone, physical address, SIC code, website, and site type are
+modeled but marked `unresolved` (non-blocking) — see the README's "Publication readiness rules currently
+implemented" section for why (the bold/italic formatting behind the original required-field list wasn't reliably
+preserved, so the code stayed conservative). §8.2 is now more specific evidence than what motivated that conservative
+default. Promoting these rules from `unresolved` to `confirmed_required` (and adding alphasort, building type, and
+start year, none of which are checked today) is a deliberate follow-up code change, not done as part of this
+documentation pass per this task's constraints — it belongs in a later numbered task.
+
+### Fields described in BWI_DOMAIN_RULES.md but not yet modeled
+
+- **Company identity (§6.1):** alphasort/sort name, SIC description, NAICS code.
+- **Location (§6.2):** phone 2, lease expiration, square footage, rumored move, latitude/longitude.
+- **Contacts (§7):** functional title/category (as distinct from `title`), contact LinkedIn URL, contact
+  lifecycle/research status, and the recommended `contact_coverage_score` depth metric.
+- **Audit/verification (§5):** BW ID, base date, changed/entered/researched-by, research date, phone-validated date,
+  follow-up date, and the researcher-identity/verification-state fields entirely.
+- **Field-level evidence (§15):** the `FieldEvidence<T>` shape (value/confidence/sourceUrl/sourceType/capturedAt) is
+  not implemented — `LocationCandidate.evidence` today is a flat `string[]`, not per-field evidence records.
+
+### Richer state modeling described but not yet implemented
+
+- **Phone (§9)** and **address (§10)** are each recommended to be modeled as a small state enum (e.g.
+  `phone_not_published` vs `phone_disconnected` vs `location_closed`), not `string | undefined`. The code already
+  special-cases the `000-000-0000` placeholder (`isAcceptablePhoneValue` in `src/publication-readiness.ts`) but does
+  not otherwise distinguish these states.
+- **Publication status (§8.1)** recommends a tri-state `blocked | provisionally_ready | confirmed_ready` status. The
+  code encodes the same information as a boolean `ready` plus `blockingReasons`/`unresolvedRequirements` arrays,
+  which is derivable into the tri-state (`blocked` when `!ready`; `confirmed_ready` when `ready` and
+  `unresolvedRequirements` is empty; `provisionally_ready` otherwise) but does not expose it as a named value today.
+- **BWI status lifecycle (§4)** recommends preserving a raw `rawBwiStatus: string` mapped separately to a normalized
+  lifecycle enum. `ExistingCompanyStatus` (`src/types.ts`) currently keeps a single flat union of raw-looking values
+  (`DIRE | DEL | RDEL | RDL | research`) without a separate normalized field — consistent with "don't destroy the raw
+  code," but without the recommended normalized/raw split.
+- **Conditional corporate-office requirements (§8.3):** company-wide employee size, total sites, and estimated
+  revenue are described as required for `single_site`/`headquarters` records. These fields exist on
+  `LocationCandidate` but are not yet checked by `evaluatePublicationReadiness()` at all (not even as `unresolved`).
+
+### Entity-resolution comparison layers described but not yet compared
+
+`BWI_DOMAIN_RULES.md` §12.2 lists parent/affiliate relationship and start year as company-similarity signals, and
+market/county and ZIP as location-similarity signals. `CompanySimilarity`/`LocationSimilarity`
+(`src/entity-resolution.ts`) currently cover name/domain/SIC and address/phone/city-state respectively; relationship,
+start year, market, county, and ZIP-specific comparison are not yet part of the scoring.
+
+None of the above are implemented as part of this documentation pass — they're recorded here so the next person (or
+task) doesn't have to re-derive the diff between the domain document and the code from scratch.

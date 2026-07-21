@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { normalizeBwiLifecycleStatus } from "./bwi-codes.ts";
 import type { PublicationReadinessResult } from "./publication-readiness.ts";
 import type { ResearchCompletenessResult } from "./scoring.ts";
-import type { CompanyIdentity, ExistingCompany, LocationCandidate, MatchResult } from "./types.ts";
+import type { CompanyIdentity, EntityResolutionDecision, ExistingCompany, LocationCandidate, MatchResult } from "./types.ts";
 
 export const DB_PATH = "data/sandbox.sqlite";
 
@@ -106,6 +106,18 @@ export function createSchema(db: Database): void {
     -- Publication readiness is a rule-based gate (see src/publication-readiness.ts),
     -- not a weighted score. research completeness is a separate descriptive score
     -- of how much we know. Neither implies the other, and neither implies approval.
+    --
+    -- Two distinct entity-resolution layers are both persisted here, deliberately
+    -- kept in separate columns rather than overloading one "classification" value:
+    --   - match_* / best_existing_company_id: the existing low-level similarity
+    --     layer (src/entity-resolution.ts) -- score, likely_new/possible_duplicate/
+    --     likely_duplicate, and the single best-scoring existing record, unchanged
+    --     since before the business-outcome layer existed.
+    --   - resolution_*: the richer, conservative business-outcome layer
+    --     (src/entity-resolution-policy.ts) built on top of the above -- e.g.
+    --     same_existing_location / new_branch_of_existing_company / ... plus
+    --     ranked alternatives, explainable reason/conflict codes, and whether the
+    --     decision needs extra human scrutiny.
     CREATE TABLE IF NOT EXISTS review_queue (
       location_candidate_id TEXT PRIMARY KEY,
       best_existing_company_id TEXT,
@@ -113,6 +125,14 @@ export function createSchema(db: Database): void {
       match_classification TEXT NOT NULL,
       match_reasons_json TEXT NOT NULL,
       match_evidence_json TEXT NOT NULL DEFAULT '{}',
+      resolution_outcome TEXT NOT NULL,
+      resolution_confidence REAL,
+      resolution_reasons_json TEXT NOT NULL DEFAULT '[]',
+      resolution_conflicts_json TEXT NOT NULL DEFAULT '[]',
+      resolution_matched_existing_company_id TEXT,
+      resolution_related_existing_company_ids_json TEXT NOT NULL DEFAULT '[]',
+      resolution_alternative_matches_json TEXT NOT NULL DEFAULT '[]',
+      resolution_requires_human_review INTEGER NOT NULL DEFAULT 0,
       completeness_score REAL NOT NULL,
       completeness_present_fields_json TEXT NOT NULL DEFAULT '[]',
       completeness_missing_fields_json TEXT NOT NULL DEFAULT '[]',
@@ -297,6 +317,7 @@ export function upsertReviewQueue(
   db: Database,
   locationCandidateId: string,
   match: MatchResult,
+  resolution: EntityResolutionDecision,
   completeness: ResearchCompletenessResult,
   publicationReadiness: PublicationReadinessResult,
   priority: number
@@ -304,16 +325,28 @@ export function upsertReviewQueue(
   db.query(`
     INSERT INTO review_queue
       (location_candidate_id, best_existing_company_id, match_score, match_classification,
-       match_reasons_json, match_evidence_json, completeness_score, completeness_present_fields_json,
+       match_reasons_json, match_evidence_json,
+       resolution_outcome, resolution_confidence, resolution_reasons_json, resolution_conflicts_json,
+       resolution_matched_existing_company_id, resolution_related_existing_company_ids_json,
+       resolution_alternative_matches_json, resolution_requires_human_review,
+       completeness_score, completeness_present_fields_json,
        completeness_missing_fields_json, publication_ready, publication_blocking_reasons_json,
        publication_unresolved_requirements_json, review_priority, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(location_candidate_id) DO UPDATE SET
       best_existing_company_id = excluded.best_existing_company_id,
       match_score = excluded.match_score,
       match_classification = excluded.match_classification,
       match_reasons_json = excluded.match_reasons_json,
       match_evidence_json = excluded.match_evidence_json,
+      resolution_outcome = excluded.resolution_outcome,
+      resolution_confidence = excluded.resolution_confidence,
+      resolution_reasons_json = excluded.resolution_reasons_json,
+      resolution_conflicts_json = excluded.resolution_conflicts_json,
+      resolution_matched_existing_company_id = excluded.resolution_matched_existing_company_id,
+      resolution_related_existing_company_ids_json = excluded.resolution_related_existing_company_ids_json,
+      resolution_alternative_matches_json = excluded.resolution_alternative_matches_json,
+      resolution_requires_human_review = excluded.resolution_requires_human_review,
       completeness_score = excluded.completeness_score,
       completeness_present_fields_json = excluded.completeness_present_fields_json,
       completeness_missing_fields_json = excluded.completeness_missing_fields_json,
@@ -328,6 +361,14 @@ export function upsertReviewQueue(
     match.classification,
     JSON.stringify(match.reasons),
     JSON.stringify({ companySimilarity: match.companySimilarity, locationSimilarity: match.locationSimilarity }),
+    resolution.outcome,
+    resolution.decisionConfidence ?? null,
+    JSON.stringify(resolution.reasons),
+    JSON.stringify(resolution.conflicts),
+    resolution.matchedExistingCompanyId ?? null,
+    JSON.stringify(resolution.relatedExistingCompanyIds ?? []),
+    JSON.stringify(resolution.alternativeMatches),
+    resolution.requiresHumanReview ? 1 : 0,
     completeness.score,
     JSON.stringify(completeness.presentFields),
     JSON.stringify(completeness.missingFields),
@@ -337,6 +378,53 @@ export function upsertReviewQueue(
     priority,
     new Date().toISOString()
   );
+}
+
+export type ReviewQueueRow = {
+  locationCandidateId: string;
+  bestExistingCompanyId?: string;
+  matchScore: number;
+  matchClassification: string;
+  matchReasons: string[];
+  resolutionOutcome: string;
+  resolutionConfidence?: number;
+  resolutionReasons: string[];
+  resolutionConflicts: string[];
+  resolutionMatchedExistingCompanyId?: string;
+  resolutionRelatedExistingCompanyIds: string[];
+  resolutionAlternativeMatches: MatchResult[];
+  resolutionRequiresHumanReview: boolean;
+  completenessScore: number;
+  publicationReady: boolean;
+  reviewPriority: number;
+  reviewStatus: string;
+};
+
+/** Reads back everything persisted by `upsertReviewQueue`, including the richer business-resolution outcome. */
+export function loadReviewQueue(db: Database): ReviewQueueRow[] {
+  const rows = db.query(`SELECT * FROM review_queue`).all() as Array<Record<string, unknown>>;
+
+  return rows.map((row) => ({
+    locationCandidateId: String(row.location_candidate_id),
+    bestExistingCompanyId: row.best_existing_company_id ? String(row.best_existing_company_id) : undefined,
+    matchScore: Number(row.match_score),
+    matchClassification: String(row.match_classification),
+    matchReasons: JSON.parse(String(row.match_reasons_json)),
+    resolutionOutcome: String(row.resolution_outcome),
+    resolutionConfidence: row.resolution_confidence === null || row.resolution_confidence === undefined ? undefined : Number(row.resolution_confidence),
+    resolutionReasons: JSON.parse(String(row.resolution_reasons_json)),
+    resolutionConflicts: JSON.parse(String(row.resolution_conflicts_json)),
+    resolutionMatchedExistingCompanyId: row.resolution_matched_existing_company_id
+      ? String(row.resolution_matched_existing_company_id)
+      : undefined,
+    resolutionRelatedExistingCompanyIds: JSON.parse(String(row.resolution_related_existing_company_ids_json)),
+    resolutionAlternativeMatches: JSON.parse(String(row.resolution_alternative_matches_json)),
+    resolutionRequiresHumanReview: Boolean(row.resolution_requires_human_review),
+    completenessScore: Number(row.completeness_score),
+    publicationReady: Boolean(row.publication_ready),
+    reviewPriority: Number(row.review_priority),
+    reviewStatus: String(row.review_status)
+  }));
 }
 
 export type SourceRun = {

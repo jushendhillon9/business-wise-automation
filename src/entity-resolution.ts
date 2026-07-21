@@ -5,7 +5,7 @@ import {
   normalizeDomain,
   normalizePhone
 } from "./normalize.ts";
-import type { ExistingCompany, LocationCandidate, MatchResult } from "./types.ts";
+import type { ExistingCompany, LocationCandidate, MatchResult, RankedMatch } from "./types.ts";
 
 /**
  * Compares one LocationCandidate against one known ExistingCompany (what
@@ -101,6 +101,40 @@ export function scoreCandidateAgainstExisting(
   };
 }
 
+/**
+ * Deterministic tie-break for two candidate matches with (potentially) equal
+ * overall scores: 1) higher overall score, 2) stronger location evidence
+ * (address score), 3) stronger company-name score, 4) stable lexical
+ * ordering by existing-record id. Database read order must never decide
+ * this — SQLite's row order without an ORDER BY is not something to rely on.
+ */
+function compareRankedMatches(a: RankedMatch, b: RankedMatch): number {
+  if (b.match.score !== a.match.score) return b.match.score - a.match.score;
+  if (b.match.locationSimilarity.addressScore !== a.match.locationSimilarity.addressScore) {
+    return b.match.locationSimilarity.addressScore - a.match.locationSimilarity.addressScore;
+  }
+  if (b.match.companySimilarity.nameScore !== a.match.companySimilarity.nameScore) {
+    return b.match.companySimilarity.nameScore - a.match.companySimilarity.nameScore;
+  }
+  return a.existing.id.localeCompare(b.existing.id);
+}
+
+/**
+ * Scores a candidate against every known existing record and returns all of
+ * them, ranked best-to-worst with explicit deterministic tie-breaking (see
+ * `compareRankedMatches`). This is the "match ranking" layer: it does not
+ * interpret the evidence into a business decision (see
+ * src/entity-resolution-policy.ts for that) — it only orders it.
+ */
+export function rankCandidateMatches(
+  candidate: LocationCandidate,
+  existingCompanies: ExistingCompany[]
+): RankedMatch[] {
+  return existingCompanies
+    .map((existing) => ({ existing, match: scoreCandidateAgainstExisting(candidate, existing) }))
+    .sort(compareRankedMatches);
+}
+
 export function findBestMatch(
   candidate: LocationCandidate,
   existingCompanies: ExistingCompany[]
@@ -115,7 +149,5 @@ export function findBestMatch(
     };
   }
 
-  return existingCompanies
-    .map((existing) => scoreCandidateAgainstExisting(candidate, existing))
-    .sort((a, b) => b.score - a.score)[0]!;
+  return rankCandidateMatches(candidate, existingCompanies)[0]!.match;
 }

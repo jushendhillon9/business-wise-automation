@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { findBestMatch, scoreCandidateAgainstExisting } from "./entity-resolution.ts";
+import { findBestMatch, rankCandidateMatches, scoreCandidateAgainstExisting } from "./entity-resolution.ts";
 import type { ExistingCompany, LocationCandidate } from "./types.ts";
 
 function baseCandidate(overrides: Partial<LocationCandidate> = {}): LocationCandidate {
@@ -104,5 +104,44 @@ describe("findBestMatch", () => {
     expect(result.classification).toBe("likely_new");
     expect(result.companySimilarity).toEqual({ nameScore: 0, domainMatch: false, sicMatch: false });
     expect(result.locationSimilarity).toEqual({ addressScore: 0, phoneMatch: false, cityStateMatch: false });
+  });
+});
+
+describe("rankCandidateMatches", () => {
+  test("11. orders matches deterministically: score, then address score, then name score, then id -- never database read order", () => {
+    // Three existing records that all score identically on overall score
+    // (0.5) so the tie-break chain must decide the order, not insertion order.
+    const tiedOnScore: ExistingCompany[] = [
+      { id: "bw-z", companyName: "Acme Logistics", address: "1200 Commerce Street", city: "Dallas", state: "TX" },
+      { id: "bw-a", companyName: "Acme Logistics", address: "1200 Commerce Street", city: "Dallas", state: "TX" },
+      { id: "bw-m", companyName: "Acme Logistics", address: "1200 Commerce Street", city: "Dallas", state: "TX" }
+    ];
+    const candidate = baseCandidate({
+      company: { id: "co-test", legalName: "Acme Logistics" },
+      physicalAddress: { street: "1200 Commerce Street", city: "Dallas", state: "TX" }
+    });
+
+    const ranked = rankCandidateMatches(candidate, tiedOnScore);
+    // identical score/addressScore/nameScore for all three -> falls through to
+    // stable lexical ordering by existing.id, regardless of input array order
+    expect(ranked.map((r) => r.existing.id)).toEqual(["bw-a", "bw-m", "bw-z"]);
+  });
+
+  test("ranking is stable across repeated calls and independent of input array order", () => {
+    const companies: ExistingCompany[] = [
+      { id: "bw-weak", companyName: "Unrelated Co" },
+      { id: "bw-strong", companyName: "Acme Logistics", address: "1200 Commerce Street", city: "Dallas", state: "TX", phone: "214-555-0100" }
+    ];
+    const candidate = baseCandidate({
+      company: { id: "co-test", legalName: "Acme Logistics" },
+      phone: "214-555-0100",
+      physicalAddress: { street: "1200 Commerce Street", city: "Dallas", state: "TX" }
+    });
+
+    const rankedForward = rankCandidateMatches(candidate, companies);
+    const rankedReversed = rankCandidateMatches(candidate, [...companies].reverse());
+
+    expect(rankedForward.map((r) => r.existing.id)).toEqual(rankedReversed.map((r) => r.existing.id));
+    expect(rankedForward[0]?.existing.id).toBe("bw-strong");
   });
 });

@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { unlinkSync } from "node:fs";
+import { resolveCandidateAgainstExisting } from "./entity-resolution-policy.ts";
+import { findBestMatch } from "./entity-resolution.ts";
+import { evaluatePublicationReadiness } from "./publication-readiness.ts";
+import { researchCompleteness, reviewPriority } from "./scoring.ts";
 import {
   createSchema,
   insertCompanyIdentity,
@@ -8,7 +12,9 @@ import {
   loadExistingCompanies,
   loadLocationCandidates,
   loadLocationCandidatesByCompanyId,
-  openDb
+  loadReviewQueue,
+  openDb,
+  upsertReviewQueue
 } from "./db.ts";
 import type { CompanyIdentity, ExistingCompany, LocationCandidate } from "./types.ts";
 
@@ -158,5 +164,74 @@ describe("BWI code round-tripping through the sandbox schema", () => {
     const [loaded] = loadExistingCompanies(db);
     expect(loaded?.status).toBe("DIRE");
     expect(loaded?.lifecycleStatus).toBe("published");
+  });
+});
+
+describe("19. review_queue persists and reloads the richer business-resolution outcome", () => {
+  test("resolution outcome, reasons, conflicts, and matched location survive a database round-trip", () => {
+    const existing: ExistingCompany = {
+      id: "bw-existing",
+      companyName: "Acme Robotics Inc.",
+      address: "100 Main St",
+      city: "Dallas",
+      state: "TX",
+      postalCode: "75201",
+      website: "https://acmerobotics.example",
+      status: "DIRE",
+      lifecycleStatus: "published"
+    };
+    insertExistingCompany(db, existing);
+
+    const company: CompanyIdentity = { id: "co-existing-branch", legalName: "Acme Robotics, Inc.", website: "https://acmerobotics.example" };
+    insertCompanyIdentity(db, company);
+    const candidate = makeLocation("loc-branch-candidate", company, {
+      physicalAddress: { street: "999 Nowhere Rd", city: "Austin", state: "TX" },
+      siteType: "branch"
+    });
+    insertLocationCandidate(db, candidate);
+
+    const bestMatch = findBestMatch(candidate, [existing]);
+    const resolution = resolveCandidateAgainstExisting(candidate, [existing]);
+    const completeness = researchCompleteness(candidate);
+    const publicationReadiness = evaluatePublicationReadiness(candidate);
+    const priority = reviewPriority(candidate, bestMatch, completeness.score);
+
+    // sanity check on the fixture before asserting the round-trip
+    expect(resolution.outcome).toBe("new_branch_of_existing_company");
+
+    upsertReviewQueue(db, candidate.id, bestMatch, resolution, completeness, publicationReadiness, priority);
+
+    const [row] = loadReviewQueue(db);
+    expect(row?.matchClassification).toBe(bestMatch.classification);
+    expect(row?.resolutionOutcome).toBe("new_branch_of_existing_company");
+    expect(row?.resolutionReasons).toEqual(resolution.reasons);
+    expect(row?.resolutionConflicts).toEqual(resolution.conflicts);
+    expect(row?.resolutionMatchedExistingCompanyId).toBe("bw-existing");
+    expect(row?.resolutionRequiresHumanReview).toBe(false);
+    expect(row?.resolutionAlternativeMatches).toEqual(resolution.alternativeMatches);
+    // review priority still comes from the unchanged low-level formula
+    expect(row?.reviewPriority).toBe(priority);
+  });
+
+  test("upsertReviewQueue keeps the low-level match_classification and the richer resolution_outcome in separate columns, not overloaded into one", () => {
+    const existing: ExistingCompany = { id: "bw-unrelated", companyName: "Totally Unrelated Co" };
+    insertExistingCompany(db, existing);
+
+    const company: CompanyIdentity = { id: "co-new", legalName: "Brand New Startup" };
+    insertCompanyIdentity(db, company);
+    const candidate = makeLocation("loc-new", company);
+    insertLocationCandidate(db, candidate);
+
+    const bestMatch = findBestMatch(candidate, [existing]);
+    const resolution = resolveCandidateAgainstExisting(candidate, [existing]);
+    const completeness = researchCompleteness(candidate);
+    const publicationReadiness = evaluatePublicationReadiness(candidate);
+    const priority = reviewPriority(candidate, bestMatch, completeness.score);
+
+    upsertReviewQueue(db, candidate.id, bestMatch, resolution, completeness, publicationReadiness, priority);
+
+    const [row] = loadReviewQueue(db);
+    expect(row?.matchClassification).toBe("likely_new");
+    expect(row?.resolutionOutcome).toBe("likely_new_company");
   });
 });

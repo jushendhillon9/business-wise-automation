@@ -502,6 +502,12 @@ Entity resolution must consider all relevant BWI lifecycle statuses:
 - research delete
 - full delete
 
+> **Implementation status (Task 4):** implemented. `resolveCandidateAgainstExisting()`
+> (`src/entity-resolution-policy.ts`) matches against existing records regardless of `lifecycleStatus`; a strong
+> same-location match against a deleted/research-deleted record still surfaces (never excluded), flagged with
+> `requiresHumanReview: true` and an explicit lifecycle-conflict reason. No lifecycle status is ever changed by this
+> code, and no record is auto-resurrected.
+
 ### 12.4 Target outcome taxonomy
 
 ```text
@@ -516,6 +522,14 @@ ambiguous_manual_review
 ```
 
 The current code may retain simpler classifications until Task 4, but its evidence structure must support these richer outcomes.
+
+> **Implementation status (Task 4):** implemented as `EntityResolutionOutcome` (`src/types.ts`), produced by
+> `resolveCandidateAgainstExisting()` (`src/entity-resolution-policy.ts`), built on top of the unchanged low-level
+> `MatchResult` evidence from §12.2/§12.3 above. Deliberately simplified to 7 values: `possible_same_location_changed_details`
+> and `possible_headquarters_move` are merged into one `possible_changed_location`, since distinguishing them reliably
+> needs evidence (e.g. confirmed move dates) this project doesn't have yet. See
+> `docs/COMPANY_LOCATION_MODEL.md` for full outcome definitions, named thresholds, and the conservative
+> ambiguous-fallback policy.
 
 ### 12.5 Field inheritance
 

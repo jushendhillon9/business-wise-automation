@@ -37,27 +37,45 @@ export type Address = {
 
 /**
  * Internal, readable representation of Business Wise's Site Type field.
- * BW's own data uses single-letter codes (S/H/B/R); those codes should only
- * appear at the BW integration boundary, via SITE_TYPE_TO_BW_CODE /
- * BW_CODE_TO_SITE_TYPE below.
+ * BW's own data uses single-letter codes (S/H/B/R/U); those codes should
+ * only appear at the BW integration boundary, via SITE_TYPE_TO_BW_CODE /
+ * BW_CODE_TO_SITE_TYPE below, or the tolerant `normalizeBwiSiteType()` in
+ * src/bwi-codes.ts (preferred for anything parsing a raw source value,
+ * since it also handles blank/lowercase/unrecognized input safely).
+ * "unknown" is BWI's own explicit "U" code, not merely an absent value —
+ * see src/bwi-codes.ts for how an unrecognized (not S/H/B/R/U) raw code is
+ * also normalized to "unknown", distinguished from "U" only by a
+ * `recognized: false` flag, not a different SiteType value.
  */
-export type SiteType = "single_site" | "headquarters" | "branch" | "regional_headquarters";
+export type SiteType = "single_site" | "headquarters" | "branch" | "regional_headquarters" | "unknown";
 
-export type BwSiteTypeCode = "S" | "H" | "B" | "R";
+export type BwSiteTypeCode = "S" | "H" | "B" | "R" | "U";
 
 export const SITE_TYPE_TO_BW_CODE: Record<SiteType, BwSiteTypeCode> = {
   single_site: "S",
   headquarters: "H",
   branch: "B",
-  regional_headquarters: "R"
+  regional_headquarters: "R",
+  unknown: "U"
 };
 
 export const BW_CODE_TO_SITE_TYPE: Record<BwSiteTypeCode, SiteType> = {
   S: "single_site",
   H: "headquarters",
   B: "branch",
-  R: "regional_headquarters"
+  R: "regional_headquarters",
+  U: "unknown"
 };
+
+/**
+ * Normalized BWI lifecycle status (docs/BWI_DOMAIN_RULES.md §4). Both `RDL`
+ * and `RDEL` — the unresolved raw spelling for "research delete" — normalize
+ * to `research_deleted`; the exact raw string is preserved separately (see
+ * `ExistingCompany.status`), never collapsed into one canonical spelling.
+ * Use `normalizeBwiLifecycleStatus()` in src/bwi-codes.ts to compute this
+ * from a raw status string.
+ */
+export type BwiLifecycleStatus = "published" | "research" | "deleted" | "research_deleted" | "unknown";
 
 /** Corporate relationship fields (see docs/BWI_DOMAIN_RULES.md §6.1 and §12.5). All unconfirmed as publication-blocking. */
 export type Relationship = {
@@ -161,6 +179,8 @@ export type LocationCandidate = {
   county?: string;
 
   siteType?: SiteType;
+  /** Exact raw site-type code as given by the source/BWI (e.g. "H", " h ", "S"), preserved verbatim even after normalization into `siteType`. See src/bwi-codes.ts. */
+  rawSiteTypeCode?: string;
   buildingName?: string;
   /** Free text: BW's categorical building-type codes are not confirmed yet. */
   buildingType?: string;
@@ -198,9 +218,11 @@ export type LocationCandidate = {
  * NOT resolved — do not silently normalize one to the other; see open domain
  * questions §23.1–2. All five raw-looking values are kept below until
  * Emily/Rif/Randall confirm which strings are actually persisted in BW's
- * system. §4 also recommends preserving a raw `rawBwiStatus: string` mapped
- * separately to a normalized lifecycle enum — not yet implemented here, see
- * docs/COMPANY_LOCATION_MODEL.md's gaps section.
+ * system. This is the raw value — see `ExistingCompany.lifecycleStatus` for
+ * the normalized counterpart, computed by `normalizeBwiLifecycleStatus()` in
+ * src/bwi-codes.ts, which maps both "RDL" and "RDEL" to the same
+ * `research_deleted` semantic value without erasing which raw spelling was
+ * actually stored.
  */
 export type ExistingCompanyStatus = "DIRE" | "DEL" | "RDEL" | "RDL" | "research";
 
@@ -220,7 +242,10 @@ export type ExistingCompany = {
   phone?: string;
   website?: string;
   sicCode?: string;
+  /** Exact raw BWI status string (e.g. "DIRE", "RDL"). Never normalized away. */
   status?: ExistingCompanyStatus;
+  /** Normalized semantic lifecycle derived from `status` — see src/bwi-codes.ts. Always recomputed from `status` on insert (src/db.ts), so the two never drift apart. */
+  lifecycleStatus?: BwiLifecycleStatus;
 };
 
 export type MatchClassification =

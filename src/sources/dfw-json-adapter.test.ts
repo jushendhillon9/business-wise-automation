@@ -74,4 +74,43 @@ describe("dfw json adapter", () => {
     expect(rows.length).toBeGreaterThan(0);
     expect(rows[0]?.recordId).toBe("dfw-2026-0001");
   });
+
+  test("maps a recognized siteTypeCode via the centralized BWI normalizer, preserving the raw code", () => {
+    const adapter = createDfwJsonAdapter();
+    const result = adapter.toCandidate({
+      recordId: "dfw-2026-0099",
+      data: { reportId: "dfw-2026-0099", companyName: "Test Co", siteTypeCode: "H" }
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.candidate.siteType).toBe("headquarters");
+    expect(result.candidate.rawSiteTypeCode).toBe("H");
+  });
+
+  test("an unrecognized siteTypeCode does not crash ingestion and is preserved as unknown", () => {
+    const adapter = createDfwJsonAdapter();
+    const result = adapter.toCandidate({
+      recordId: "dfw-2026-0098",
+      data: { reportId: "dfw-2026-0098", companyName: "Test Co", siteTypeCode: "Q" }
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.candidate.siteType).toBe("unknown");
+    expect(result.candidate.rawSiteTypeCode).toBe("Q");
+  });
+
+  test("a record with no siteTypeCode leaves siteType/rawSiteTypeCode undefined", () => {
+    const adapter = createDfwJsonAdapter();
+    const result = adapter.toCandidate({
+      recordId: "dfw-2026-0097",
+      data: { reportId: "dfw-2026-0097", companyName: "Test Co" }
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.candidate.siteType).toBeUndefined();
+    expect(result.candidate.rawSiteTypeCode).toBeUndefined();
+  });
 });

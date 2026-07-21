@@ -49,7 +49,7 @@ LocationCandidate {
   physicalAddress, mailingAddress,
   phone, tollFreePhone,
   market, county,
-  siteType, buildingName, buildingType, leaseOrOwn,
+  siteType, rawSiteTypeCode, buildingName, buildingType, leaseOrOwn,
   employeeSizeSite, employeeSizeCompanyWide, employeeCountExact, totalSites,
   estimatedAnnualRevenue,
   contacts, description,
@@ -67,6 +67,48 @@ ingestion doesn't exercise that yet (see below).
 `Contact`, `Address` (used for both `physicalAddress` and `mailingAddress`), and the banded `EmployeeSizeValue` /
 `RevenueValue` (`{ estimate, minimum, maximum, bandLabel, rawCode }`) are shared, general-purpose types — see
 `src/types.ts`. The `EmployeeSizeValue`/`RevenueValue` shapes match `docs/BWI_DOMAIN_RULES.md` §11 exactly.
+
+## Normalizing BWI legacy codes without losing raw values
+
+Business Wise inherited shorthand codes from the original printed-directory/Delphi systems (site type `S/H/B/R/U`,
+lifecycle status `DIRE/DEL/RDL/RDEL/research`). Internal logic wants clean, typed values to reason about; future
+integration and auditing need the exact original code, losslessly. The project stores **both**, as explicit typed
+fields — not just inside `rawSourceData`/`rawJson` catch-alls — for anything domain logic actually reads:
+
+- `LocationCandidate.siteType` (normalized: `SiteType`) + `LocationCandidate.rawSiteTypeCode` (exact raw string, e.g.
+  `"H"`, `" h "`)
+- `ExistingCompany.status` (exact raw string, e.g. `"DIRE"`, `"RDL"`) + `ExistingCompany.lifecycleStatus` (normalized:
+  `BwiLifecycleStatus`)
+
+Both normalizers live in one centralized, pure module — **`src/bwi-codes.ts`** — rather than being spread as ad hoc
+string comparisons through the codebase:
+
+- `normalizeBwiSiteType(raw)` → `{ normalized, rawCode, recognized }`. Tolerant of case, surrounding whitespace, and
+  already-normalized input (e.g. `"headquarters"`). `"U"` is BWI's own explicit "unknown site type" code and
+  normalizes to `"unknown"` with `recognized: true`; a code that isn't `S/H/B/R/U` at all *also* normalizes to
+  `"unknown"`, but with `recognized: false` — the same safe fallback value, with the distinction preserved via the
+  flag rather than silently claiming a code we don't understand.
+- `normalizeBwiLifecycleStatus(raw)` → `{ normalized, rawCode, recognized }`. Both `"RDL"` and `"RDEL"` normalize to
+  the same `research_deleted` value (docs/BWI_DOMAIN_RULES.md §4 leaves the actual stored spelling unresolved), but
+  neither is treated as canonical — the exact raw string a caller passed in is always preserved on `rawCode` /
+  `ExistingCompany.status`, never collapsed or overwritten.
+
+Both functions are pure, deterministic, and never throw: blank/`undefined`/genuinely-unrecognized input degrades to
+`{ normalized: "unknown", recognized: false }` rather than crashing ingestion.
+
+`src/sources/dfw-json-adapter.ts` and `src/sources/dfw-csv-adapter.ts` call `normalizeBwiSiteType()` when a source
+gives a raw site-type code (`siteTypeCode` / `site_type_code`); the ingestion engine itself stays BWI-code-agnostic —
+that translation is an adapter's job, per the source-adapter boundary described above. `src/db.ts`'s
+`insertExistingCompany()` always derives `lifecycle_status` from `status` via `normalizeBwiLifecycleStatus()`, so the
+two columns can never drift apart.
+
+**What this deliberately does not include:** employee-size and revenue band code tables. `EmployeeSizeValue` /
+`RevenueValue` (`{ estimate, minimum, maximum, bandLabel, rawCode }`) already have a `rawCode` field and a source
+adapter can populate it directly, but `docs/BWI_DOMAIN_RULES.md` §11 states plainly that "the complete BWI code
+dictionary for employee and revenue bands has not yet been captured" — so `src/bwi-codes.ts` has no
+`normalizeBwiEmployeeBand`/`normalizeBwiRevenueBand` function, and none of the current fixtures fabricate one. A
+raw employee/revenue code is preserved verbatim if a source provides it; it is never used to *infer* a
+minimum/maximum/estimate that isn't independently given.
 
 **Naming note:** `docs/BWI_DOMAIN_RULES.md` §2 refers to the entity-resolution comparison target as
 `LocationCandidate / ExistingLocation`. This codebase's existing-record type is named `ExistingCompany`
@@ -188,10 +230,11 @@ documentation pass per this task's constraints — it belongs in a later numbere
   code encodes the same information as a boolean `ready` plus `blockingReasons`/`unresolvedRequirements` arrays,
   which is derivable into the tri-state (`blocked` when `!ready`; `confirmed_ready` when `ready` and
   `unresolvedRequirements` is empty; `provisionally_ready` otherwise) but does not expose it as a named value today.
-- **BWI status lifecycle (§4)** recommends preserving a raw `rawBwiStatus: string` mapped separately to a normalized
-  lifecycle enum. `ExistingCompanyStatus` (`src/types.ts`) currently keeps a single flat union of raw-looking values
-  (`DIRE | DEL | RDEL | RDL | research`) without a separate normalized field — consistent with "don't destroy the raw
-  code," but without the recommended normalized/raw split.
+- ~~**BWI status lifecycle (§4)** recommends preserving a raw `rawBwiStatus: string` mapped separately to a
+  normalized lifecycle enum.~~ **Implemented:** `ExistingCompany.status` (raw) + `ExistingCompany.lifecycleStatus`
+  (normalized via `normalizeBwiLifecycleStatus()`) — see "Normalizing BWI legacy codes without losing raw values"
+  above. The *which spelling is canonical* question (§4, §23.1) remains genuinely unresolved and is not answered by
+  this normalization — both `RDL` and `RDEL` are still preserved as distinct raw values.
 - **Conditional corporate-office requirements (§8.3):** company-wide employee size, total sites, and estimated
   revenue are described as required for `single_site`/`headquarters` records. These fields exist on
   `LocationCandidate` but are not yet checked by `evaluatePublicationReadiness()` at all (not even as `unresolved`).

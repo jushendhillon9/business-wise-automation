@@ -41,6 +41,29 @@ entity resolution's job, done later, not ingestion's. See **`docs/COMPANY_LOCATI
 rationale, a diagram, and how entity resolution's company/location evidence split will later support richer outcomes
 like "new branch of an existing company" or "headquarters move."
 
+## Normalized values vs. raw BWI codes
+
+Business Wise inherited shorthand codes from the original printed-directory/Delphi systems — site type (`S/H/B/R/U`)
+and lifecycle status (`DIRE`/`DEL`/`RDL`/`RDEL`/`research`). Internal logic wants clean typed values; future
+integration, debugging, and auditing need the exact original code preserved losslessly. The project stores **both**,
+as explicit typed fields:
+
+- `LocationCandidate.siteType` (normalized) + `LocationCandidate.rawSiteTypeCode` (exact raw string as given)
+- `ExistingCompany.status` (exact raw string, never normalized away) + `ExistingCompany.lifecycleStatus` (normalized)
+
+All BWI code translation is centralized in **`src/bwi-codes.ts`** (`normalizeBwiSiteType()`,
+`normalizeBwiLifecycleStatus()`) rather than scattered as ad hoc string comparisons. Both functions are pure,
+tolerant of case/whitespace/already-normalized input, and never throw — an unrecognized code normalizes to a safe
+`"unknown"` value with `recognized: false` rather than crashing ingestion or silently pretending to be a known code.
+Both `"RDL"` and `"RDEL"` normalize to the same `research_deleted` value without either spelling being treated as
+canonical — see `docs/COMPANY_LOCATION_MODEL.md` → "Normalizing BWI legacy codes without losing raw values" for the
+full design, and the "Known BWI status discrepancy" section below for why neither spelling is chosen.
+
+Employee-size and revenue bands (`EmployeeSizeValue`/`RevenueValue`) already carry a `rawCode` field and can preserve
+one if a source provides it, but there is deliberately **no** `normalizeBwiEmployeeBand`/`normalizeBwiRevenueBand`
+function — `docs/BWI_DOMAIN_RULES.md` §11 states the complete BWI code dictionary for those bands "has not yet been
+captured," so no mapping table is fabricated.
+
 ## Four separate concepts
 
 Every candidate is evaluated along four axes that are deliberately kept independent. None of them implies the others,
@@ -99,8 +122,11 @@ this repo used **`RDL`** and a plain **`research`** status for the same-ish conc
 rather than silently normalizing one to the other — this is flagged as unresolved domain configuration until
 Emily/Rif/Randall confirm which strings BW's system actually persists. `docs/BWI_DOMAIN_RULES.md` §4 additionally
 recommends preserving a raw `rawBwiStatus: string` mapped separately to a normalized lifecycle enum
-(`published`/`research`/`research_deleted`/`deleted`); the code does not yet implement that normalized/raw split —
-tracked in `docs/COMPANY_LOCATION_MODEL.md`'s gaps section.
+(`published`/`research`/`research_deleted`/`deleted`) — this **is** implemented: `ExistingCompany.lifecycleStatus`,
+computed from `status` by `normalizeBwiLifecycleStatus()` (`src/bwi-codes.ts`), maps both `RDL` and `RDEL` to the
+same `research_deleted` value. That normalization answers "what does this status mean internally," not "which raw
+spelling is correct" — the raw string is still preserved verbatim on `status`, and neither `RDL` nor `RDEL` is
+treated as canonical for future writeback. See "Normalized values vs. raw BWI codes" above.
 
 ## Source ingestion layer
 
@@ -168,7 +194,12 @@ Each fixture intentionally includes: a fully-populated record with a contact (pu
 name+city, a record missing phone, a record missing employee count, a record with a source URL, an exact duplicate
 row within the same file, and a malformed row (no company name) that gets skipped without crashing the run. Only two
 of the nine ingested candidates have a contact; the rest demonstrate `publicationReady: false` even when reasonably
-complete.
+complete. Three records also carry a raw BWI site-type code to exercise `normalizeBwiSiteType()` end to end: Pioneer
+Steel Fabricators (`"H"` → `headquarters`), Blue Cactus Roasters (`"s"` → `single_site`), Harbor Point Consulting
+(`"b"` → `branch`), and Trinity Grove Bakery Co carries an unrecognized code (`"Q"` → `unknown`,
+`recognized: false`) to prove an unmapped code doesn't crash ingestion. All four are records with no employee count,
+chosen deliberately so `bun run queue`'s scores/priorities stay identical to before this normalization was added —
+only the `siteType` column changes.
 
 ### Adding a new SourceAdapter
 
@@ -238,13 +269,17 @@ code-focused follow-ups building on that:
 
 1. Plug in a real DFW source (chamber report export, business journal feed, or county license dataset) behind a new `SourceAdapter`.
 2. Promote the broader confirmed-required set in `docs/BWI_DOMAIN_RULES.md` §8.2 (physical address, local phone, SIC, site type, building type, alphasort, start year) from `unresolved`/unmodeled to `confirmed_required` in `src/publication-readiness.ts`, once the team decides the evidence in §8.2 is sufficient to act on — see `docs/COMPANY_LOCATION_MODEL.md`'s gaps section for the current state.
-3. Resolve which BWI status strings (`DIRE`/`DEL`/`RDEL` vs. `RDL`/`research`) are actually persisted (`docs/BWI_DOMAIN_RULES.md` §23.1–2), and either collapse `ExistingCompanyStatus` accordingly or implement the recommended raw/normalized lifecycle split from §4.
+3. Resolve which BWI status string is actually persisted (`DIRE`/`DEL`/`RDEL` vs. `RDL`/`research`,
+   `docs/BWI_DOMAIN_RULES.md` §23.1–2), and either collapse `ExistingCompanyStatus` accordingly or pick a canonical
+   writeback spelling for `research_deleted` in `src/business-wise-adapter.ts`. (The raw/normalized split itself —
+   `status` + `lifecycleStatus` — is already implemented; what's left is the underlying spelling question.)
 4. Add field-level evidence provenance (`FieldEvidence<T>` per `docs/BWI_DOMAIN_RULES.md` §15) so every proposed value can be inspected by Emily/Jen.
 5. Add enrichment adapters for website, LinkedIn/team pages, phone/email validation, and SIC proposal.
 6. Evaluate entity-resolution thresholds against Emily's manual judgments on a labeled sample.
 7. Use the `companySimilarity`/`locationSimilarity` split in `MatchResult` to derive the richer outcome taxonomy in `docs/BWI_DOMAIN_RULES.md` §12.4 (same existing location, new branch of an existing company, headquarters move, ...) once there's a labeled sample to validate against.
 8. Build a simple review UI only after the candidate schema and review decisions stabilize.
 9. Implement the production `BusinessWiseAdapter` after Rif/Randall confirm architecture and write boundaries.
+10. Once BWI's real employee-size/revenue band code dictionary is captured (`docs/BWI_DOMAIN_RULES.md` §11, unresolved), add `normalizeBwiEmployeeBand`/`normalizeBwiRevenueBand` to `src/bwi-codes.ts` — deliberately not invented in this task.
 
 ## Non-goals for this starter
 

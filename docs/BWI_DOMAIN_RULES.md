@@ -114,6 +114,12 @@ Ingestion must not prematurely merge provisional company identities across sourc
 - Regional Headquarters are uncommon.
 - Branches may still be valuable, but usually do not carry all corporate-level fields.
 
+> **Implementation status (Task 3):** `src/bwi-codes.ts`'s `normalizeBwiSiteType()` implements the S/H/B/R mapping
+> above in code (case/whitespace-tolerant, raw code always preserved). It also accepts a `U` code, mapped to an
+> `unknown` normalized value — this is *not* evidenced in the table above; it exists so a genuinely unrecognized
+> code has somewhere safe to normalize to (`recognized: false`) without being confused with a real site type. See
+> `docs/COMPANY_LOCATION_MODEL.md` for detail.
+
 ---
 
 ## 4. Publication lifecycle and status values
@@ -145,6 +151,12 @@ rawBwiStatus: string
 ```
 
 and map it separately to a normalized lifecycle enum. Do not destroy the raw code.
+
+> **Implementation status (Task 3):** this rule is implemented as `ExistingCompany.status` (raw, exact) +
+> `ExistingCompany.lifecycleStatus` (normalized, via `normalizeBwiLifecycleStatus()` in `src/bwi-codes.ts`), always
+> recomputed from `status` on insert. Both `RDL` and `RDEL` normalize to the same `research_deleted` value without
+> either being treated as canonical — the "Unresolved spelling" question above is unaffected by this normalization.
+> See `docs/COMPANY_LOCATION_MODEL.md` for detail.
 
 ---
 
@@ -439,6 +451,11 @@ interface RevenueValue {
 ### Unresolved
 
 The complete BWI code dictionary for employee and revenue bands has not yet been captured.
+
+> **Implementation status (Task 3):** `EmployeeSizeValue`/`RevenueValue` (`src/types.ts`) already match the interface
+> above exactly and preserve `rawCode` through database round-trips. Per the "Unresolved" note above, `src/bwi-codes.ts`
+> deliberately has no `normalizeBwiEmployeeBand`/`normalizeBwiRevenueBand` function — no mapping table is fabricated
+> without the evidence to back it.
 
 ---
 

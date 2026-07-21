@@ -21,6 +21,7 @@
     "companyName": "Trinity Grove Bakery Co",
     "city": "Grapevine",
     "state": "TX",
+    "siteTypeCode": "Q",
     "publishedAt": "2026-07-14T09:00:00.000Z"
   },
   {
@@ -42,6 +43,7 @@
     "state": "TX",
     "postalCode": "76106",
     "phone": "817-555-0199",
+    "siteTypeCode": "H",
     "publishedAt": "2026-07-15T09:00:00.000Z"
   },
   {

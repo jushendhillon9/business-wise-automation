@@ -1,4 +1,5 @@
-import { asEstimate, type Address, type Contact } from "../types.ts";
+import { normalizeBwiSiteType } from "../bwi-codes.ts";
+import { asEstimate, type Address, type Contact, type SiteType } from "../types.ts";
 import { parseCsvRecords } from "./csv.ts";
 import type { LocationCandidateDraft, MappingResult, RawSourceRecord, SourceAdapter } from "./types.ts";
 
@@ -52,6 +53,16 @@ export function createDfwCsvAdapter(filePath: string = DEFAULT_FIXTURE_PATH): So
             }
           : undefined;
 
+      // Raw BWI-style site-type code (S/H/B/R/U), when the source provides one. Uses the
+      // centralized normalizer rather than comparing the code ad hoc -- see src/bwi-codes.ts.
+      let siteType: SiteType | undefined;
+      let rawSiteTypeCode: string | undefined;
+      if (data.site_type_code) {
+        const result = normalizeBwiSiteType(data.site_type_code);
+        siteType = result.normalized;
+        rawSiteTypeCode = result.rawCode;
+      }
+
       const candidate: LocationCandidateDraft = {
         capturedAt: data.issued_date ? new Date(data.issued_date).toISOString() : new Date().toISOString(),
         company: {
@@ -62,6 +73,8 @@ export function createDfwCsvAdapter(filePath: string = DEFAULT_FIXTURE_PATH): So
         phone: data.phone || undefined,
         market: "DFW",
         county: data.county || undefined,
+        siteType,
+        rawSiteTypeCode,
         employeeSizeSite: data.employees ? asEstimate(Number(data.employees) || undefined) : undefined,
         contacts,
         evidence: ["county business license record"],

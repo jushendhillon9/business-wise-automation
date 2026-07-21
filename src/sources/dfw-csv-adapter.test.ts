@@ -70,4 +70,30 @@ describe("dfw csv adapter", () => {
     expect(results.some((r) => !r.ok)).toBe(true);
     expect(results.filter((r) => r.ok).length).toBeGreaterThan(0);
   });
+
+  test("maps a lowercase site_type_code via the centralized BWI normalizer, preserving the raw code", () => {
+    const adapter = createDfwCsvAdapter();
+    const result = adapter.toCandidate({
+      recordId: "DCL-99999",
+      data: { license_id: "DCL-99999", business_name: "Test Co", site_type_code: "b" }
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.candidate.siteType).toBe("branch");
+    expect(result.candidate.rawSiteTypeCode).toBe("b");
+  });
+
+  test("a row with no site_type_code column value leaves siteType/rawSiteTypeCode undefined", () => {
+    const adapter = createDfwCsvAdapter();
+    const result = adapter.toCandidate({
+      recordId: "DCL-99998",
+      data: { license_id: "DCL-99998", business_name: "Test Co" }
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.candidate.siteType).toBeUndefined();
+    expect(result.candidate.rawSiteTypeCode).toBeUndefined();
+  });
 });

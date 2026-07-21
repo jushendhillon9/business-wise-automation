@@ -1,4 +1,5 @@
-import { asEstimate, type Address, type Contact } from "../types.ts";
+import { normalizeBwiSiteType } from "../bwi-codes.ts";
+import { asEstimate, type Address, type Contact, type SiteType } from "../types.ts";
 import type { LocationCandidateDraft, MappingResult, RawSourceRecord, SourceAdapter } from "./types.ts";
 
 const DEFAULT_FIXTURE_PATH = "data/sources/dfw-json-sample.json";
@@ -56,6 +57,16 @@ export function createDfwJsonAdapter(filePath: string = DEFAULT_FIXTURE_PATH): S
             }
           : undefined;
 
+      // Raw BWI-style site-type code (S/H/B/R/U), when the source provides one. Uses the
+      // centralized normalizer rather than comparing the code ad hoc -- see src/bwi-codes.ts.
+      let siteType: SiteType | undefined;
+      let rawSiteTypeCode: string | undefined;
+      if (typeof data.siteTypeCode === "string") {
+        const result = normalizeBwiSiteType(data.siteTypeCode);
+        siteType = result.normalized;
+        rawSiteTypeCode = result.rawCode;
+      }
+
       const candidate: LocationCandidateDraft = {
         sourceUrl: typeof data.sourceUrl === "string" ? data.sourceUrl : undefined,
         capturedAt: typeof data.publishedAt === "string" ? data.publishedAt : new Date().toISOString(),
@@ -66,6 +77,8 @@ export function createDfwJsonAdapter(filePath: string = DEFAULT_FIXTURE_PATH): S
         physicalAddress,
         phone: typeof data.phone === "string" ? data.phone : undefined,
         market: "DFW",
+        siteType,
+        rawSiteTypeCode,
         employeeSizeSite: typeof data.employeeCount === "number" ? asEstimate(data.employeeCount) : undefined,
         description: typeof data.notes === "string" ? data.notes : undefined,
         contacts,

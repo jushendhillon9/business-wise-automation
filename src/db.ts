@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { normalizeBwiLifecycleStatus } from "./bwi-codes.ts";
 import type { PublicationReadinessResult } from "./publication-readiness.ts";
 import type { ResearchCompletenessResult } from "./scoring.ts";
 import type { CompanyIdentity, ExistingCompany, LocationCandidate, MatchResult } from "./types.ts";
@@ -13,6 +14,10 @@ export function createSchema(db: Database): void {
   db.exec(`
     PRAGMA journal_mode = WAL;
 
+    -- status is the exact raw BWI lifecycle code (e.g. "DIRE", "RDL"), never
+    -- normalized away. lifecycle_status is the normalized counterpart,
+    -- always recomputed from status via normalizeBwiLifecycleStatus() on
+    -- insert (src/bwi-codes.ts) so the two can never drift apart.
     CREATE TABLE IF NOT EXISTS existing_companies (
       id TEXT PRIMARY KEY,
       company_name TEXT NOT NULL,
@@ -23,7 +28,8 @@ export function createSchema(db: Database): void {
       phone TEXT,
       website TEXT,
       sic_code TEXT,
-      status TEXT
+      status TEXT,
+      lifecycle_status TEXT
     );
 
     -- Company-level identity: facts that should be true across every
@@ -77,6 +83,7 @@ export function createSchema(db: Database): void {
       county TEXT,
 
       site_type TEXT,
+      raw_site_type_code TEXT,
       building_name TEXT,
       building_type TEXT,
       lease_or_own TEXT,
@@ -154,10 +161,12 @@ export function createSchema(db: Database): void {
 }
 
 export function insertExistingCompany(db: Database, company: ExistingCompany): void {
+  const lifecycleStatus = normalizeBwiLifecycleStatus(company.status).normalized;
+
   db.query(`
     INSERT OR REPLACE INTO existing_companies
-      (id, company_name, address, city, state, postal_code, phone, website, sic_code, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (id, company_name, address, city, state, postal_code, phone, website, sic_code, status, lifecycle_status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     company.id,
     company.companyName,
@@ -168,7 +177,8 @@ export function insertExistingCompany(db: Database, company: ExistingCompany): v
     company.phone ?? null,
     company.website ?? null,
     company.sicCode ?? null,
-    company.status ?? null
+    company.status ?? null,
+    lifecycleStatus
   );
 }
 
@@ -206,11 +216,11 @@ export function insertLocationCandidate(db: Database, candidate: LocationCandida
        source_record_id, fingerprint, captured_at, ingested_at,
        physical_street, physical_suite, physical_city, physical_state, physical_postal_code,
        mailing_address_json, phone, toll_free_phone, market, county,
-       site_type, building_name, building_type, lease_or_own,
+       site_type, raw_site_type_code, building_name, building_type, lease_or_own,
        employee_size_site_json, employee_size_company_wide_json, employee_count_exact,
        total_sites, estimated_annual_revenue_json, description, contacts_json,
        evidence_json, raw_source_json, raw_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     candidate.id,
     candidate.company.id,
@@ -233,6 +243,7 @@ export function insertLocationCandidate(db: Database, candidate: LocationCandida
     candidate.market ?? null,
     candidate.county ?? null,
     candidate.siteType ?? null,
+    candidate.rawSiteTypeCode ?? null,
     candidate.buildingName ?? null,
     candidate.buildingType ?? null,
     candidate.leaseOrOwn ?? null,
@@ -263,7 +274,7 @@ export function loadLocationCandidatesByCompanyId(db: Database, companyIdentityI
 
 export function loadExistingCompanies(db: Database): ExistingCompany[] {
   const rows = db.query(`
-    SELECT id, company_name, address, city, state, postal_code, phone, website, sic_code, status
+    SELECT id, company_name, address, city, state, postal_code, phone, website, sic_code, status, lifecycle_status
     FROM existing_companies
   `).all() as Array<Record<string, unknown>>;
 
@@ -277,7 +288,8 @@ export function loadExistingCompanies(db: Database): ExistingCompany[] {
     phone: row.phone ? String(row.phone) : undefined,
     website: row.website ? String(row.website) : undefined,
     sicCode: row.sic_code ? String(row.sic_code) : undefined,
-    status: row.status as ExistingCompany["status"]
+    status: row.status as ExistingCompany["status"],
+    lifecycleStatus: row.lifecycle_status as ExistingCompany["lifecycleStatus"]
   }));
 }
 

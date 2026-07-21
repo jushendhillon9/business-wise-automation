@@ -1,7 +1,7 @@
-license_id,business_name,address,city,state,zip,phone,website,employees,issued_date,contact_name,contact_email,contact_phone
-DCL-88231,"Ridgeline Precision Machining",1180 Enterprise Dr,Carrollton,TX,75006,972-555-0161,ridgelineprecision.example,34,2026-06-02,Dana Whitfield,dana.whitfield@ridgelineprecision.example,972-555-0162
-DCL-88232,"Harbor Point Consulting",,Denton,TX,,,,,2026-06-03,,,
-DCL-88233,"Summit Peak Electrical Services",7700 Airport Fwy,North Richland Hills,TX,76180,,summitpeakelectrical.example,9,2026-06-05,,,
-DCL-88234,"Blue Cactus Roasters",450 Bishop Ave,Fort Worth,TX,76107,682-555-0142,,,2026-06-06,,,
-DCL-88231,"Ridgeline Precision Machining",1180 Enterprise Dr,Carrollton,TX,75006,972-555-0161,ridgelineprecision.example,34,2026-06-02,Dana Whitfield,dana.whitfield@ridgelineprecision.example,972-555-0162
-DCL-88236,,2900 Wycliff Ave,Dallas,TX,75219,214-555-0188,,,2026-06-08,,,
+license_id,business_name,address,city,state,zip,phone,website,employees,issued_date,contact_name,contact_email,contact_phone,site_type_code
+DCL-88231,"Ridgeline Precision Machining",1180 Enterprise Dr,Carrollton,TX,75006,972-555-0161,ridgelineprecision.example,34,2026-06-02,Dana Whitfield,dana.whitfield@ridgelineprecision.example,972-555-0162,
+DCL-88232,"Harbor Point Consulting",,Denton,TX,,,,,2026-06-03,,,,b
+DCL-88233,"Summit Peak Electrical Services",7700 Airport Fwy,North Richland Hills,TX,76180,,summitpeakelectrical.example,9,2026-06-05,,,,
+DCL-88234,"Blue Cactus Roasters",450 Bishop Ave,Fort Worth,TX,76107,682-555-0142,,,2026-06-06,,,,s
+DCL-88231,"Ridgeline Precision Machining",1180 Enterprise Dr,Carrollton,TX,75006,972-555-0161,ridgelineprecision.example,34,2026-06-02,Dana Whitfield,dana.whitfield@ridgelineprecision.example,972-555-0162,
+DCL-88236,,2900 Wycliff Ave,Dallas,TX,75219,214-555-0188,,,2026-06-08,,,,

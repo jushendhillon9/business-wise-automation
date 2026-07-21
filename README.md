@@ -38,8 +38,30 @@ location-level facts (address, phone, site type, employee count, contacts). The 
 chamber report finds "Acme Logistics", a business journal finds "Acme Logistics Inc." the next day) simply produce
 two provisional identities and two location candidates; deciding whether they're the same real-world company is
 entity resolution's job, done later, not ingestion's. See **`docs/COMPANY_LOCATION_MODEL.md`** for the full
-rationale, a diagram, and how entity resolution's company/location evidence split will later support richer outcomes
-like "new branch of an existing company" or "headquarters move."
+rationale and a diagram.
+
+## Similarity classification vs. business-resolution outcome
+
+Entity resolution has two layers, and neither replaces the other:
+
+- **Similarity classification** (`src/entity-resolution.ts`) — the original, unchanged low-level layer:
+  `scoreCandidateAgainstExisting()` computes an overall `score` and one of `likely_new`/`possible_duplicate`/
+  `likely_duplicate` for a candidate against one existing record, with `companySimilarity`/`locationSimilarity`
+  evidence. `rankCandidateMatches()` scores against *every* existing record and returns them all, deterministically
+  ranked (never trusting database read order for ties).
+- **Business-resolution outcome** (`src/entity-resolution-policy.ts`) — `resolveCandidateAgainstExisting()` reads
+  that same ranked evidence and answers the operational question a researcher actually needs: `same_existing_location`,
+  `new_branch_of_existing_company`, `new_headquarters_of_existing_company`, `possible_changed_location`,
+  `possible_name_change`, `likely_new_company`, or the conservative fallback `ambiguous_manual_review`. It never
+  forces a confident branch/move/HQ/name-change call when the evidence doesn't clearly support it, and it considers
+  existing records across every lifecycle status (published/research/deleted/research_deleted) — a strong match
+  against a deleted record still surfaces, flagged with `requiresHumanReview: true` and a lifecycle-conflict reason,
+  never silently excluded or auto-resurrected.
+
+**The similarity score formula, weights, and thresholds are unchanged** — this outcome layer only interprets the
+existing evidence; `bun run queue`'s `matchScore`/`classification` values are identical to before this layer existed.
+See **`docs/COMPANY_LOCATION_MODEL.md`** → "Similarity classification vs. business-resolution outcome" for full
+outcome definitions, named thresholds, multi-match ranking rules, and known calibration limitations.
 
 ## Normalized values vs. raw BWI codes
 
@@ -69,10 +91,12 @@ captured," so no mapping table is fabricated.
 Every candidate is evaluated along four axes that are deliberately kept independent. None of them implies the others,
 and **none of them is approval** — a human still reviews and approves or rejects every record.
 
-1. **Entity resolution** (`src/entity-resolution.ts`) — "Does this candidate already exist in Business Wise?" Produces
-   a classification (`likely_new` / `possible_duplicate` / `likely_duplicate`), an overall match score, and separate
-   `companySimilarity` (name/domain/SIC) and `locationSimilarity` (address/phone/city-state) evidence against
-   `existing_companies`.
+1. **Entity resolution** (`src/entity-resolution.ts` + `src/entity-resolution-policy.ts`) — "Does this candidate
+   already exist in Business Wise?" The low-level layer produces a classification (`likely_new` /
+   `possible_duplicate` / `likely_duplicate`), an overall match score, and separate `companySimilarity`
+   (name/domain/SIC) and `locationSimilarity` (address/phone/city-state) evidence against `existing_companies`; the
+   business-resolution layer built on top of it answers the richer operational question (same location? new branch?
+   possible name change? ambiguous?) — see "Similarity classification vs. business-resolution outcome" above.
 2. **Research completeness** (`src/scoring.ts`, `researchCompleteness()`) — "How much useful information have we
    gathered about this candidate?" A purely descriptive score (plus namespaced `presentFields`/`missingFields`, e.g.
    `company.website` vs `location.phone`) over the fields we currently model. A high completeness score does not
@@ -246,8 +270,12 @@ bun test
 
 Expected behavior with the sample data (`bun run reset && bun run queue`):
 
-- All 9 ingested candidates classify as `likely_new` against the seeded `existing_companies` (none of the DFW/CSV
-  fixture companies are meant to match the seeded BW records).
+- All 9 ingested candidates classify as `likely_new` (and resolve to `likely_new_company`) against the seeded
+  `existing_companies` — none of the DFW/CSV fixture companies are meant to match the seeded BW records, so the
+  richer outcome layer correctly agrees there's nothing to match against. See
+  `src/entity-resolution-policy.test.ts` for focused fixtures exercising `same_existing_location`,
+  `new_branch_of_existing_company`, `possible_name_change`, `ambiguous_manual_review`, and the rest — deliberately
+  not mixed into this demo data, per the "prefer focused test fixtures over polluting the queue demo" guidance.
 - Only **Westline Freight Solutions** and **Ridgeline Precision Machining** — the two fixture records with a
   contact — show `publicationReady: yes`. Every other candidate is blocked on `min_one_contact`, regardless of how
   complete or high-priority it is.
@@ -275,11 +303,12 @@ code-focused follow-ups building on that:
    `status` + `lifecycleStatus` — is already implemented; what's left is the underlying spelling question.)
 4. Add field-level evidence provenance (`FieldEvidence<T>` per `docs/BWI_DOMAIN_RULES.md` §15) so every proposed value can be inspected by Emily/Jen.
 5. Add enrichment adapters for website, LinkedIn/team pages, phone/email validation, and SIC proposal.
-6. Evaluate entity-resolution thresholds against Emily's manual judgments on a labeled sample.
-7. Use the `companySimilarity`/`locationSimilarity` split in `MatchResult` to derive the richer outcome taxonomy in `docs/BWI_DOMAIN_RULES.md` §12.4 (same existing location, new branch of an existing company, headquarters move, ...) once there's a labeled sample to validate against.
-8. Build a simple review UI only after the candidate schema and review decisions stabilize.
-9. Implement the production `BusinessWiseAdapter` after Rif/Randall confirm architecture and write boundaries.
-10. Once BWI's real employee-size/revenue band code dictionary is captured (`docs/BWI_DOMAIN_RULES.md` §11, unresolved), add `normalizeBwiEmployeeBand`/`normalizeBwiRevenueBand` to `src/bwi-codes.ts` — deliberately not invented in this task.
+6. Build a **labeled evaluation dataset** (real or realistic candidate/existing-record pairs with a researcher's actual same-location/branch/HQ/name-change/new-company judgment) and use it to measure precision/recall per `EntityResolutionOutcome` and retune the named thresholds in `src/entity-resolution-policy.ts` (`STRONG_COMPANY_NAME_SCORE`, `STRONG_ADDRESS_SCORE`, `AMBIGUOUS_SCORE_MARGIN`, etc.) — those thresholds are reasoned defaults today, not calibrated ones.
+7. Split `possible_changed_location` back into `docs/BWI_DOMAIN_RULES.md` §12.4's separate `possible_same_location_changed_details` / `possible_headquarters_move` outcomes once there's reliable evidence (e.g. confirmed move dates) to distinguish them — see `docs/COMPANY_LOCATION_MODEL.md`'s gaps section for why they're merged today.
+8. Implement the §12.5 field-inheritance proposal (safe company-level fields like website/SIC/start year proposed for inheritance when linking a `new_branch_of_existing_company`/`new_headquarters_of_existing_company` to its matched identity) — `EntityResolutionDecision` already surfaces the matched/related existing-company ids needed for this.
+9. Build a simple review UI only after the candidate schema and review decisions stabilize — a natural place to surface `EntityResolutionDecision.reasons`/`conflicts`/`alternativeMatches` for a reviewer.
+10. Implement the production `BusinessWiseAdapter` after Rif/Randall confirm architecture and write boundaries.
+11. Once BWI's real employee-size/revenue band code dictionary is captured (`docs/BWI_DOMAIN_RULES.md` §11, unresolved), add `normalizeBwiEmployeeBand`/`normalizeBwiRevenueBand` to `src/bwi-codes.ts` — deliberately not invented in this task.
 
 ## Non-goals for this starter
 

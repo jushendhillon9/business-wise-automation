@@ -230,7 +230,10 @@ export type ExistingCompanyStatus = "DIRE" | "DEL" | "RDEL" | "RDL" | "research"
  * A known Business Wise location record to match candidates against. Kept
  * flat (company + location facts together) since it represents one existing
  * BWI location row, not a company-wide identity — BW's own master-data
- * model for existing records is out of scope for this project.
+ * model for existing records is out of scope for this project. (Not
+ * renamed to `ExistingLocation` in this task — see the naming note in
+ * docs/COMPANY_LOCATION_MODEL.md.) `id` is what `MatchResult.existingCompanyId`
+ * and `EntityResolutionDecision.matchedExistingCompanyId` refer to.
  */
 export type ExistingCompany = {
   id: string;
@@ -285,17 +288,127 @@ export type MatchResult = {
 };
 
 /**
+ * One existing BWI record, ranked and paired with its similarity evidence.
+ * `rankCandidateMatches()` (src/entity-resolution.ts) returns these in a
+ * deterministic best-to-worst order; the business-decision policy layer
+ * (src/entity-resolution-policy.ts) reads the ranked list to pick a
+ * business outcome without recomputing similarity.
+ */
+export type RankedMatch = {
+  existing: ExistingCompany;
+  match: MatchResult;
+};
+
+/**
+ * The operational question a Business Wise researcher actually needs
+ * answered — distinct from (and built on top of) `MatchClassification`,
+ * which only describes raw similarity strength. See
+ * docs/COMPANY_LOCATION_MODEL.md for full definitions of each outcome and
+ * docs/BWI_DOMAIN_RULES.md §12.4 for the aspirational full taxonomy this is
+ * a deliberately conservative, simplified version of (that section's
+ * `possible_same_location_changed_details` and `possible_headquarters_move`
+ * are merged here into one `possible_changed_location`).
+ */
+export type EntityResolutionOutcome =
+  | "same_existing_location"
+  | "possible_changed_location"
+  | "new_branch_of_existing_company"
+  | "new_headquarters_of_existing_company"
+  | "possible_name_change"
+  | "likely_new_company"
+  | "ambiguous_manual_review";
+
+/**
+ * Stable, machine-readable identifiers for *why* a decision was reached.
+ * Kept as a closed union (not free-text prose) so the queue/detail views and
+ * any future automation can rely on exact values. Not every reason is used
+ * by every outcome — see src/entity-resolution-policy.ts for which reasons
+ * a given outcome can produce.
+ */
+export type EntityResolutionReasonCode =
+  | "no_existing_locations_to_compare"
+  | "exact_domain_match"
+  | "sic_match"
+  | "strong_company_name_match"
+  | "similar_company_name_match"
+  | "exact_normalized_address_match"
+  | "strong_normalized_address_match"
+  | "exact_phone_match"
+  | "city_state_match"
+  | "candidate_site_type_branch"
+  | "candidate_site_type_headquarters"
+  | "candidate_site_type_unknown"
+  | "candidate_site_type_missing"
+  | "existing_company_other_location_found"
+  | "weak_or_no_match_evidence";
+
+/**
+ * Stable, machine-readable identifiers for evidence that conflicts with (or
+ * complicates) the chosen outcome. See src/entity-resolution-policy.ts.
+ */
+export type EntityResolutionConflictCode =
+  | "multiple_close_existing_location_matches"
+  | "company_name_materially_different"
+  | "candidate_address_differs_from_best_existing_location"
+  | "existing_location_is_deleted"
+  | "existing_location_is_research_deleted";
+
+/**
+ * The richer, conservative business-resolution decision for one
+ * LocationCandidate, built on top of (never replacing) the low-level
+ * MatchResult evidence. `bestMatch`/`alternativeMatches` are the same
+ * MatchResult values `scoreCandidateAgainstExisting()` always produced —
+ * this layer only interprets them, it does not recompute or recalibrate
+ * the underlying score/classification. See
+ * src/entity-resolution-policy.ts's `resolveCandidateAgainstExisting()`.
+ */
+export type EntityResolutionDecision = {
+  outcome: EntityResolutionOutcome;
+  /**
+   * Deterministic heuristic derived from the existing similarity score —
+   * NOT a statistically calibrated probability. Omit from any UI copy that
+   * implies otherwise. See src/entity-resolution-policy.ts for how it's
+   * computed.
+   */
+  decisionConfidence?: number;
+
+  bestMatch?: MatchResult;
+  /** Up to 2 next-best matches, in the same deterministic order as `rankCandidateMatches()`. */
+  alternativeMatches: MatchResult[];
+
+  /** The existing BWI record (location row) this decision is about, when the outcome names one. */
+  matchedExistingCompanyId?: string;
+  /** Other existing records that plausibly belong to the same company identity (e.g. other locations found for a new-branch/new-HQ outcome). */
+  relatedExistingCompanyIds?: string[];
+
+  reasons: EntityResolutionReasonCode[];
+  conflicts: EntityResolutionConflictCode[];
+
+  /**
+   * True when this decision should get extra human scrutiny beyond the
+   * normal review-queue flow (e.g. the matched record is deleted, or the
+   * outcome is inherently non-definitive). Every candidate still goes
+   * through human review regardless — this flags the cases where the
+   * automated interpretation itself is uncertain or historically sensitive.
+   */
+  requiresHumanReview: boolean;
+};
+
+/**
  * Conceptual shape of one queue row, kept here for reference. Note the four
  * concepts stay separate and none of them imply the others:
  * - entityResolution: does this location candidate already exist in BW?
  * - researchCompleteness: how much do we know about it?
  * - publicationReadiness: does it satisfy BW's actual required-field rules?
  * - reviewPriority: which candidate should a human look at first?
- * See src/scoring.ts and src/publication-readiness.ts for the real return types.
+ * See src/scoring.ts and src/publication-readiness.ts for the real return
+ * types, and src/entity-resolution-policy.ts for `EntityResolutionDecision`,
+ * the richer business-outcome layer built on top of `entityResolution`.
  */
 export type ReviewQueueItem = {
   candidate: LocationCandidate;
   entityResolution: MatchResult;
+  entityResolutionDecision: EntityResolutionDecision;
   researchCompleteness: { score: number; presentFields: string[]; missingFields: string[] };
   publicationReadiness: { ready: boolean; blockingReasons: string[]; unresolvedRequirements: string[] };
   reviewPriority: number;

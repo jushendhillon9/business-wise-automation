@@ -149,30 +149,112 @@ about identity means:
 This is a different question from **ingestion deduplication** (`src/sources/fingerprint.ts`, the `source_records`
 table), which only asks "have we already processed this exact source item?" — see the README for that distinction.
 
-## How entity resolution will later decide same-location vs. new-branch
+## Similarity classification vs. business-resolution outcome
 
-Today, `findBestMatch()` (`src/entity-resolution.ts`) compares one `LocationCandidate` against each known
-`ExistingCompany` and returns evidence split into two groups:
+Two distinct concepts sit side by side in this codebase, and neither replaces the other:
 
-- **`companySimilarity`** — name score, domain match, SIC match: facts that should hold regardless of which location
-  you're looking at
-- **`locationSimilarity`** — address score, phone match, city/state match: facts specific to this physical site
+1. **Similarity / match-confidence classification** — `findBestMatch()` / `scoreCandidateAgainstExisting()`
+   (`src/entity-resolution.ts`). Compares one `LocationCandidate` against each known `ExistingCompany` and returns a
+   `MatchResult`: an overall `score`, one of `likely_new` / `possible_duplicate` / `likely_duplicate`, and evidence
+   split into `companySimilarity` (name score, domain match, SIC match — facts that should hold regardless of which
+   location you're looking at) and `locationSimilarity` (address score, phone match, city/state match — facts
+   specific to this physical site). **This formula, its weights, and its thresholds are unchanged since the
+   company/location split** — Task 4 does not recalibrate them.
+2. **Business-resolution outcome** — `resolveCandidateAgainstExisting()` (`src/entity-resolution-policy.ts`). Reads
+   the *same* `MatchResult` evidence (via `rankCandidateMatches()`, the deterministic ranking layer) and answers the
+   operational question a Business Wise researcher actually needs answered: is this the same existing location, a
+   new branch, a new headquarters, a possible name change, a possible move, a genuinely new company, or too
+   ambiguous to call automatically?
 
-The overall score and the three classifications (`likely_new` / `possible_duplicate` / `likely_duplicate`) are
-unchanged from before this refactor — only where the evidence is read from, and the fact that it's now exposed as
-two separate groups, is new.
+The three architectural layers, matching `src/entity-resolution.ts` / `src/entity-resolution-policy.ts`:
 
-Splitting the evidence this way is what will let future work derive richer outcomes without reworking the matching
-logic again, for example:
+```
+A. scoreCandidateAgainstExisting(candidate, existing)   -- low-level similarity for one existing record (unchanged)
+B. rankCandidateMatches(candidate, existingCompanies)    -- ranks all of them, deterministically, best-to-worst
+C. resolveCandidateAgainstExisting(candidate, existingCompanies) -- interprets the ranked evidence into a business outcome
+```
 
-- high `companySimilarity` + high `locationSimilarity` → probably the *same existing location*
-- high `companySimilarity` + low `locationSimilarity` → probably a *new branch of an existing company*
-- high `companySimilarity` + moderate `locationSimilarity` (same city, different address) + `siteType: headquarters`
-  → possibly a *headquarters move*
+### The seven outcomes (`EntityResolutionOutcome`, `src/types.ts`)
 
-None of those richer outcomes are implemented yet — this task only lays the groundwork (see the project's
-non-goals). `docs/BWI_DOMAIN_RULES.md` §12.4 explicitly confirms this is intentional: "The current code may retain
-simpler classifications until Task 4, but its evidence structure must support these richer outcomes."
+This is a deliberately conservative, simplified version of the aspirational taxonomy in
+`docs/BWI_DOMAIN_RULES.md` §12.4 (that section's `possible_same_location_changed_details` and
+`possible_headquarters_move` are merged into one `possible_changed_location` here).
+
+| Outcome | Meaning | Requires human review? |
+|---|---|---|
+| `same_existing_location` | Strong company **and** strong location evidence. A company-name match alone can never produce this — location-specific evidence (address, or phone+geography) is required. | Only if the matched record's lifecycle is deleted/research-deleted (see below). |
+| `new_branch_of_existing_company` | Strong company identity, materially different location, candidate `siteType: "branch"`. | No — but still flows through the normal review queue like everything else. |
+| `new_headquarters_of_existing_company` | Strong company identity, materially different location, candidate `siteType: "headquarters"`. | **Always** — the policy never claims the former HQ closed or moved; that's a human call. |
+| `possible_changed_location` | Strong company identity, materially different location, and site type doesn't resolve confidently to branch/HQ. Deliberately non-definitive. | Always. |
+| `possible_name_change` | Strong location evidence, materially different name, but a stable identity signal (domain or phone match) supports continuity. An exact address alone is never sufficient — unrelated businesses can occupy the same property over time. | Always. |
+| `likely_new_company` | No existing record has credible company or location evidence. | No. |
+| `ambiguous_manual_review` | Meaningful evidence exists but interpretations conflict — the conservative fallback. Never chosen just to avoid ambiguity, and never skipped in favor of guessing. | Always. |
+
+### Named thresholds (`src/entity-resolution-policy.ts`)
+
+All cutoffs reuse the existing 0–1 similarity scale from `scoreCandidateAgainstExisting()` — this layer interprets
+that scale, it doesn't add a new one:
+
+- `STRONG_COMPANY_NAME_SCORE` (0.85), `MODERATE_COMPANY_NAME_SCORE` (0.7), `WEAK_COMPANY_NAME_SCORE` (0.5) —
+  interpret `companySimilarity.nameScore`.
+- `STRONG_ADDRESS_SCORE` (0.85), `MODERATE_ADDRESS_SCORE` (0.6) — interpret `locationSimilarity.addressScore`.
+- `MEANINGFUL_MATCH_SCORE` (0.3) — below this on the *overall* `MatchResult.score`, there is no credible signal at
+  all (`likely_new_company`). This is intentionally a different question from the low-level 0.68/0.9 classification
+  thresholds, which measure duplicate strength, not business interpretation.
+- `AMBIGUOUS_SCORE_MARGIN` (0.05) — if the top two ranked matches' overall scores differ by less than this *and*
+  point at two different existing records, the pick between them is treated as unsafe (`ambiguous_manual_review`),
+  regardless of what either one alone would otherwise suggest.
+
+"Strong company identity" = `nameScore >= STRONG_COMPANY_NAME_SCORE`, or (`domainMatch` or `sicMatch`) with
+`nameScore >= MODERATE_COMPANY_NAME_SCORE`. "Strong location evidence" = `addressScore >= STRONG_ADDRESS_SCORE`, or
+an exact phone match combined with city/state match, or a moderately strong address score combined with city/state
+match. Neither predicate is satisfied by name similarity alone.
+
+### Multiple-match ranking
+
+`rankCandidateMatches()` scores a candidate against *every* known existing record and returns all of them, ranked —
+never just the single best one thrown away with the rest discarded. Ordering is fully deterministic, in this
+priority: 1) higher overall score, 2) stronger location evidence (address score), 3) stronger company-name score,
+4) stable lexical ordering by existing-record id. Database read order (SQLite gives no ordering guarantee without an
+explicit `ORDER BY`) never decides the outcome. `EntityResolutionDecision.alternativeMatches` carries up to the next
+2 best matches (top 3 total, including `bestMatch`) so a reviewer can see what else was considered.
+
+### Lifecycle handling
+
+Entity resolution keeps comparing against BWI records in **every** lifecycle status — published, research, deleted,
+research_deleted, unknown. Deleted and research-deleted rows are never excluded from matching, and a strong
+same-location match against one can still legitimately produce `same_existing_location` — but the decision then
+carries `requiresHumanReview: true` and a `conflicts` entry (`existing_location_is_deleted` or
+`existing_location_is_research_deleted`) explaining why. The policy never auto-resurrects a deleted record, never
+silently reclassifies a deleted-row match as an active location, and never changes any lifecycle status itself — no
+writeback of any kind happens here. Both `RDL` and `RDEL` raw spellings normalize to the same `research_deleted`
+value (`src/bwi-codes.ts`), so which spelling BW actually stores doesn't change this policy's behavior at all.
+
+### Explainability
+
+Every decision carries `reasons: EntityResolutionReasonCode[]` and `conflicts: EntityResolutionConflictCode[]` —
+stable, typed identifiers (e.g. `exact_domain_match`, `candidate_site_type_branch`,
+`multiple_close_existing_location_matches`, `existing_location_is_deleted`), not prose. `bun run queue`'s terminal
+table stays scannable by showing only the headline outcome; the full reason/conflict/alternative-match detail is
+persisted in `review_queue`'s JSON columns (`resolution_reasons_json`, `resolution_conflicts_json`,
+`resolution_alternative_matches_json`) for anyone who needs to inspect a specific decision.
+
+### `decisionConfidence` — a heuristic, not a probability
+
+`EntityResolutionDecision.decisionConfidence` is optional and, when present, is simply the underlying
+`MatchResult.score`, capped at 0.6 whenever `requiresHumanReview` is true. It is a deterministic heuristic derived
+directly from the existing similarity score — explicitly **not** a statistically calibrated probability, and no
+claim is made that it is one.
+
+### Known limitations and what a real evaluation would need
+
+These thresholds and rules are reasoned defaults, not thresholds tuned against real outcomes. Before trusting this
+layer's outcomes for anything beyond surfacing a prioritized human review queue, the project needs a
+**labeled evaluation dataset** — real (or realistic) candidate/existing-record pairs with a researcher's actual
+same-location/branch/HQ/name-change/new-company judgment attached — to measure precision/recall per outcome and
+retune the named thresholds against it. `docs/BWI_DOMAIN_RULES.md` §20 lists the entity-resolution metrics (same-
+location precision/recall, new-branch accuracy, false-duplicate rate, false-new rate, manual-review rate) this would
+eventually feed. Building that dataset is explicitly out of scope for this task (see non-goals).
 
 ## Current end-to-end local workflow
 
@@ -182,8 +264,12 @@ bun run reset      # init db, seed BW companies, ingest both sample sources, run
 bun run queue
 ```
 
-`bun run queue` still shows one row per `LocationCandidate`. See the README for the full command list and the
-distinction between entity resolution, research completeness, publication readiness, and review priority.
+`bun run queue` still shows one row per `LocationCandidate`, now with `resolutionOutcome` as the prominent column and
+the low-level `classification` kept alongside it as supporting context. The default fixture data doesn't match any
+seeded BW record, so every row currently reads `likely_new_company` — see `src/entity-resolution-policy.test.ts` for
+focused fixtures exercising every other outcome, deliberately kept out of the default demo per this project's
+"prefer focused test fixtures over polluting the queue demo" guidance. See the README for the full command list and
+the distinction between entity resolution, research completeness, publication readiness, and review priority.
 
 ## Known gaps vs. BWI_DOMAIN_RULES.md
 
@@ -248,3 +334,19 @@ start year, market, county, and ZIP-specific comparison are not yet part of the 
 
 None of the above are implemented as part of this documentation pass — they're recorded here so the next person (or
 task) doesn't have to re-derive the diff between the domain document and the code from scratch.
+
+### Entity-resolution business-outcome taxonomy: implemented, deliberately simplified
+
+`BWI_DOMAIN_RULES.md` §12.4's target outcome taxonomy has 8 values, including `possible_same_location_changed_details`
+and `possible_headquarters_move` as two separate outcomes. `EntityResolutionOutcome` (`src/types.ts`) implements 7,
+merging those two into one `possible_changed_location` — both represent "the evidence plausibly indicates the
+location changed, but we can't confidently say how," and splitting them would require distinguishing "this specific
+existing location moved" from "a new HQ replaced an old one" with evidence this project doesn't yet have reliably
+(e.g. confirmed move dates). This is a deliberate simplification, not an oversight — see "Similarity classification
+vs. business-resolution outcome" above for the full outcome definitions and named thresholds.
+
+Also unimplemented from §12.5 (Field inheritance): when a new branch/HQ is linked to an existing company, safe
+company-level fields (website, email format, SIC, start year, parent/HQ relationship) could be proposed for
+inheritance from the existing record. `EntityResolutionDecision` surfaces `matchedExistingCompanyId` /
+`relatedExistingCompanyIds` for `new_branch_of_existing_company` and `new_headquarters_of_existing_company`, which is
+enough context for a future task to build that proposal — but no inheritance logic exists yet.

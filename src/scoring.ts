@@ -1,4 +1,4 @@
-import { hasMeaningfulContact, type CandidateCompany, type MatchResult } from "./types.ts";
+import { hasMeaningfulContact, type LocationCandidate, type MatchResult } from "./types.ts";
 
 export type ResearchCompletenessResult = {
   score: number;
@@ -7,28 +7,31 @@ export type ResearchCompletenessResult = {
 };
 
 type CompletenessCheck = {
+  /** Namespaced field identifier: "company.*" for CompanyIdentity fields, "location.*" for LocationCandidate fields. */
   field: string;
   weight: number;
-  present: (candidate: CandidateCompany) => boolean;
+  present: (candidate: LocationCandidate) => boolean;
 };
 
 const COMPLETENESS_CHECKS: CompletenessCheck[] = [
-  { field: "companyName", weight: 0.2, present: (c) => Boolean(c.companyName) },
-  { field: "address", weight: 0.15, present: (c) => Boolean(c.address) },
-  { field: "phone", weight: 0.15, present: (c) => Boolean(c.phone) },
-  { field: "website", weight: 0.1, present: (c) => Boolean(c.website) },
-  { field: "employeeCountEstimate", weight: 0.1, present: (c) => Boolean(c.employeeCountEstimate) },
-  { field: "description", weight: 0.1, present: (c) => Boolean(c.description) },
-  { field: "proposedSic", weight: 0.1, present: (c) => Boolean(c.proposedSic) },
+  { field: "company.legalName", weight: 0.2, present: (c) => Boolean(c.company.legalName) },
+  { field: "location.physicalAddress", weight: 0.15, present: (c) => Boolean(c.physicalAddress?.street) },
+  { field: "location.phone", weight: 0.15, present: (c) => Boolean(c.phone) },
+  { field: "company.website", weight: 0.1, present: (c) => Boolean(c.company.website) },
+  { field: "location.employeeSizeSite", weight: 0.1, present: (c) => Boolean(c.employeeSizeSite?.estimate) },
+  { field: "location.description", weight: 0.1, present: (c) => Boolean(c.description) },
+  { field: "company.sicCode", weight: 0.1, present: (c) => Boolean(c.company.sicCode) },
   { field: "contacts", weight: 0.1, present: (c) => hasMeaningfulContact(c.contacts) }
 ];
 
 /**
- * "How much useful research data do we have?" This is purely descriptive —
- * it does not imply the candidate is ready to publish. See
- * publication-readiness.ts for the separate, rule-based publish gate.
+ * "How much useful research data do we have?" Evaluates company-level and
+ * location-level fields together, but this is purely descriptive — it does
+ * not imply the candidate is ready to publish. See publication-readiness.ts
+ * for the separate, rule-based publish gate. Same weights/meaning as before
+ * the company/location split; only where each field is read from changed.
  */
-export function researchCompleteness(candidate: CandidateCompany): ResearchCompletenessResult {
+export function researchCompleteness(candidate: LocationCandidate): ResearchCompletenessResult {
   const presentFields: string[] = [];
   const missingFields: string[] = [];
   let score = 0;
@@ -55,7 +58,7 @@ export function researchCompleteness(candidate: CandidateCompany): ResearchCompl
  * required fields, and readiness never determines priority (or vice versa).
  */
 export function reviewPriority(
-  candidate: CandidateCompany,
+  candidate: LocationCandidate,
   match: MatchResult,
   researchCompletenessScore: number
 ): number {
@@ -66,7 +69,7 @@ export function reviewPriority(
   // per Emily's "4+ employees generally" guidance.
   const likelyNewBonus = match.classification === "likely_new" ? 0.35 : 0;
 
-  const employeeCount = candidate.employeeCountEstimate;
+  const employeeCount = candidate.employeeSizeSite?.estimate;
   const isCoreSiteType = candidate.siteType === undefined || candidate.siteType === "single_site" || candidate.siteType === "headquarters";
   const inCoreEmployeeRange = employeeCount !== undefined && employeeCount >= 10 && employeeCount <= 99;
   const coreSegmentBonus = inCoreEmployeeRange && isCoreSiteType ? 0.2 : 0;

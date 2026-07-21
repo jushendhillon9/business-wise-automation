@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { unlinkSync } from "node:fs";
-import { createSchema, loadCandidates, openDb } from "./db.ts";
+import { createSchema, loadLocationCandidates, openDb } from "./db.ts";
 import { runIngestion } from "./ingestion.ts";
 import { createDfwCsvAdapter } from "./sources/dfw-csv-adapter.ts";
 import { createDfwJsonAdapter } from "./sources/dfw-json-adapter.ts";
@@ -29,6 +29,28 @@ afterEach(() => {
   }
 });
 
+function mockAdapter(sourceId: string, sourceName: string, recordId: string, companyName: string): SourceAdapter {
+  return {
+    sourceId,
+    sourceName,
+    async fetch() {
+      return [{ recordId, data: { companyName } }];
+    },
+    toCandidate(record) {
+      const data = record.data as { companyName: string };
+      return {
+        ok: true,
+        candidate: {
+          capturedAt: new Date().toISOString(),
+          company: { legalName: data.companyName },
+          contacts: [],
+          evidence: [`mock source ${sourceId}`]
+        }
+      };
+    }
+  };
+}
+
 describe("runIngestion", () => {
   test("summarizes counts for the DFW JSON fixture", async () => {
     const adapter = createDfwJsonAdapter();
@@ -52,58 +74,36 @@ describe("runIngestion", () => {
     expect(second.newCandidateCount).toBe(0);
     expect(second.alreadyIngestedCount).toBe(first.newCandidateCount + first.alreadyIngestedCount);
 
-    const candidates = loadCandidates(db);
+    const candidates = loadLocationCandidates(db);
     expect(candidates.length).toBe(first.newCandidateCount);
   });
 
-  test("two different sources observing the same company both persist as candidates", async () => {
-    const sourceA: SourceAdapter = {
-      sourceId: "chamber-mock",
-      sourceName: "Mock Chamber Source",
-      async fetch() {
-        return [{ recordId: "chamber-1", data: { companyName: "Acme Logistics" } }];
-      },
-      toCandidate(record) {
-        const data = record.data as { companyName: string };
-        return {
-          ok: true,
-          candidate: {
-            sourceRecordId: record.recordId,
-            capturedAt: new Date().toISOString(),
-            companyName: data.companyName,
-            contacts: [],
-            evidence: ["mock chamber source"]
-          }
-        };
-      }
-    };
+  test("each ingested location candidate references its own provisional company identity", async () => {
+    const adapter = createDfwJsonAdapter();
+    await runIngestion(db, adapter);
 
-    const sourceB: SourceAdapter = {
-      sourceId: "journal-mock",
-      sourceName: "Mock Business Journal Source",
-      async fetch() {
-        return [{ recordId: "journal-1", data: { companyName: "Acme Logistics Inc." } }];
-      },
-      toCandidate(record) {
-        const data = record.data as { companyName: string };
-        return {
-          ok: true,
-          candidate: {
-            sourceRecordId: record.recordId,
-            capturedAt: new Date().toISOString(),
-            companyName: data.companyName,
-            contacts: [],
-            evidence: ["mock business journal source"]
-          }
-        };
-      }
-    };
+    const candidates = loadLocationCandidates(db);
+    expect(candidates.length).toBeGreaterThan(0);
+    for (const candidate of candidates) {
+      expect(candidate.company.id).toBeDefined();
+      expect(candidate.company.legalName).toBe(candidate.company.legalName);
+    }
+    // ingestion never merges identities: every location got its own distinct company id
+    const companyIds = candidates.map((c) => c.company.id);
+    expect(new Set(companyIds).size).toBe(candidates.length);
+  });
+
+  test("two different sources observing the same company both persist as separate observations", async () => {
+    const sourceA = mockAdapter("chamber-mock", "Mock Chamber Source", "chamber-1", "Acme Logistics");
+    const sourceB = mockAdapter("journal-mock", "Mock Business Journal Source", "journal-1", "Acme Logistics Inc.");
 
     await runIngestion(db, sourceA);
     await runIngestion(db, sourceB);
 
-    const candidates = loadCandidates(db);
+    const candidates = loadLocationCandidates(db);
     expect(candidates.length).toBe(2);
-    expect(candidates.map((c) => c.companyName).sort()).toEqual(["Acme Logistics", "Acme Logistics Inc."]);
+    expect(candidates.map((c) => c.company.legalName).sort()).toEqual(["Acme Logistics", "Acme Logistics Inc."]);
+    // each is its own provisional company identity -- ingestion does not decide these are the same company
+    expect(candidates[0]?.company.id).not.toBe(candidates[1]?.company.id);
   });
 });

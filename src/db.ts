@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import type { PublicationReadinessResult } from "./publication-readiness.ts";
 import type { ResearchCompletenessResult } from "./scoring.ts";
-import type { CandidateCompany, ExistingCompany, MatchResult } from "./types.ts";
+import type { CompanyIdentity, ExistingCompany, LocationCandidate, MatchResult } from "./types.ts";
 
 export const DB_PATH = "data/sandbox.sqlite";
 
@@ -22,57 +22,90 @@ export function createSchema(db: Database): void {
       postal_code TEXT,
       phone TEXT,
       website TEXT,
+      sic_code TEXT,
       status TEXT
     );
 
-    CREATE TABLE IF NOT EXISTS candidates (
+    -- Company-level identity: facts that should be true across every
+    -- location of the same company. Ingestion always creates a fresh,
+    -- provisional identity per observation (never merges across sources) --
+    -- see docs/COMPANY_LOCATION_MODEL.md. The schema still supports one
+    -- identity having many locations, for when entity resolution later
+    -- consolidates provisional identities.
+    CREATE TABLE IF NOT EXISTS company_identities (
       id TEXT PRIMARY KEY,
-      source TEXT NOT NULL,
-      source_id TEXT NOT NULL,
-      source_url TEXT,
-      source_record_id TEXT,
-      captured_at TEXT NOT NULL,
-      ingested_at TEXT NOT NULL,
-      fingerprint TEXT NOT NULL,
-      company_name TEXT NOT NULL,
+      legal_name TEXT NOT NULL,
       dba_name TEXT,
-      phone TEXT,
-      toll_free_phone TEXT,
-      address TEXT,
-      suite TEXT,
-      city TEXT,
-      state TEXT,
-      postal_code TEXT,
-      county TEXT,
-      mailing_address TEXT,
-      site_type TEXT,
-      employee_count_estimate INTEGER,
-      employee_size_company_wide INTEGER,
-      total_sites INTEGER,
-      start_year INTEGER,
-      estimated_annual_revenue REAL,
       website TEXT,
       email_format TEXT,
-      linkedin_url TEXT,
-      team_page_url TEXT,
-      proposed_sic TEXT,
+      sic_code TEXT,
+      start_year INTEGER,
       relationship_json TEXT,
+      international INTEGER,
+      team_page_url TEXT,
+      linkedin_url TEXT,
+      raw_json TEXT NOT NULL
+    );
+
+    -- One observed location for a company, as reported by one source item.
+    -- Location-level facts live as columns here; company-level facts are
+    -- looked up via company_identity_id (and also embedded in raw_json, a
+    -- point-in-time snapshot of the full LocationCandidate as ingested).
+    CREATE TABLE IF NOT EXISTS location_candidates (
+      id TEXT PRIMARY KEY,
+      company_identity_id TEXT NOT NULL,
+      company_legal_name TEXT NOT NULL,
+
+      source_id TEXT NOT NULL,
+      source_name TEXT NOT NULL,
+      source_url TEXT,
+      source_record_id TEXT,
+      fingerprint TEXT NOT NULL,
+      captured_at TEXT NOT NULL,
+      ingested_at TEXT NOT NULL,
+
+      physical_street TEXT,
+      physical_suite TEXT,
+      physical_city TEXT,
+      physical_state TEXT,
+      physical_postal_code TEXT,
+      mailing_address_json TEXT,
+
+      phone TEXT,
+      toll_free_phone TEXT,
+      market TEXT,
+      county TEXT,
+
+      site_type TEXT,
+      building_name TEXT,
+      building_type TEXT,
+      lease_or_own TEXT,
+
+      employee_size_site_json TEXT,
+      employee_size_company_wide_json TEXT,
+      employee_count_exact INTEGER,
+      total_sites INTEGER,
+      estimated_annual_revenue_json TEXT,
+
       description TEXT,
       contacts_json TEXT NOT NULL DEFAULT '[]',
       evidence_json TEXT NOT NULL,
       raw_source_json TEXT,
-      raw_json TEXT NOT NULL
+      raw_json TEXT NOT NULL,
+
+      FOREIGN KEY(company_identity_id) REFERENCES company_identities(id)
     );
 
     -- Publication readiness is a rule-based gate (see src/publication-readiness.ts),
     -- not a weighted score. research completeness is a separate descriptive score
     -- of how much we know. Neither implies the other, and neither implies approval.
     CREATE TABLE IF NOT EXISTS review_queue (
-      candidate_id TEXT PRIMARY KEY,
+      location_candidate_id TEXT PRIMARY KEY,
       best_existing_company_id TEXT,
       match_score REAL NOT NULL,
       match_classification TEXT NOT NULL,
       match_reasons_json TEXT NOT NULL,
+      match_evidence_json TEXT NOT NULL DEFAULT '{}',
       completeness_score REAL NOT NULL,
       completeness_present_fields_json TEXT NOT NULL DEFAULT '[]',
       completeness_missing_fields_json TEXT NOT NULL DEFAULT '[]',
@@ -83,7 +116,7 @@ export function createSchema(db: Database): void {
       review_status TEXT NOT NULL DEFAULT 'pending',
       reviewer_note TEXT,
       created_at TEXT NOT NULL,
-      FOREIGN KEY(candidate_id) REFERENCES candidates(id)
+      FOREIGN KEY(location_candidate_id) REFERENCES location_candidates(id)
     );
 
     -- One row per source ingestion invocation. Answers: which source ran,
@@ -105,16 +138,16 @@ export function createSchema(db: Database): void {
 
     -- Ingestion-deduplication ledger: has this exact source item already been
     -- processed? Distinct from entity resolution, which asks whether a
-    -- candidate matches an existing Business Wise company.
+    -- location candidate matches an existing Business Wise company/location.
     CREATE TABLE IF NOT EXISTS source_records (
       source_id TEXT NOT NULL,
       fingerprint TEXT NOT NULL,
       source_record_id TEXT,
-      candidate_id TEXT NOT NULL,
+      location_candidate_id TEXT NOT NULL,
       first_run_id TEXT NOT NULL,
       first_ingested_at TEXT NOT NULL,
       PRIMARY KEY (source_id, fingerprint),
-      FOREIGN KEY(candidate_id) REFERENCES candidates(id),
+      FOREIGN KEY(location_candidate_id) REFERENCES location_candidates(id),
       FOREIGN KEY(first_run_id) REFERENCES source_runs(id)
     );
   `);
@@ -123,8 +156,8 @@ export function createSchema(db: Database): void {
 export function insertExistingCompany(db: Database, company: ExistingCompany): void {
   db.query(`
     INSERT OR REPLACE INTO existing_companies
-      (id, company_name, address, city, state, postal_code, phone, website, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (id, company_name, address, city, state, postal_code, phone, website, sic_code, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     company.id,
     company.companyName,
@@ -134,52 +167,80 @@ export function insertExistingCompany(db: Database, company: ExistingCompany): v
     company.postalCode ?? null,
     company.phone ?? null,
     company.website ?? null,
+    company.sicCode ?? null,
     company.status ?? null
   );
 }
 
-export function insertCandidate(db: Database, candidate: CandidateCompany): void {
+export function insertCompanyIdentity(db: Database, identity: CompanyIdentity): void {
   db.query(`
-    INSERT OR REPLACE INTO candidates
-      (id, source, source_id, source_url, source_record_id, captured_at, ingested_at,
-       fingerprint, company_name, dba_name, phone, toll_free_phone, address, suite, city, state,
-       postal_code, county, mailing_address, site_type, employee_count_estimate,
-       employee_size_company_wide, total_sites, start_year, estimated_annual_revenue,
-       website, email_format, linkedin_url, team_page_url, proposed_sic, relationship_json,
-       description, contacts_json, evidence_json, raw_source_json, raw_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO company_identities
+      (id, legal_name, dba_name, website, email_format, sic_code, start_year,
+       relationship_json, international, team_page_url, linkedin_url, raw_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    identity.id,
+    identity.legalName,
+    identity.dbaName ?? null,
+    identity.website ?? null,
+    identity.emailFormat ?? null,
+    identity.sicCode ?? null,
+    identity.startYear ?? null,
+    identity.relationship ? JSON.stringify(identity.relationship) : null,
+    identity.international === undefined ? null : identity.international ? 1 : 0,
+    identity.teamPageUrl ?? null,
+    identity.linkedinUrl ?? null,
+    JSON.stringify(identity)
+  );
+}
+
+export function loadCompanyIdentities(db: Database): CompanyIdentity[] {
+  const rows = db.query(`SELECT raw_json FROM company_identities`).all() as Array<{ raw_json: string }>;
+  return rows.map((row) => JSON.parse(row.raw_json) as CompanyIdentity);
+}
+
+export function insertLocationCandidate(db: Database, candidate: LocationCandidate): void {
+  db.query(`
+    INSERT OR REPLACE INTO location_candidates
+      (id, company_identity_id, company_legal_name, source_id, source_name, source_url,
+       source_record_id, fingerprint, captured_at, ingested_at,
+       physical_street, physical_suite, physical_city, physical_state, physical_postal_code,
+       mailing_address_json, phone, toll_free_phone, market, county,
+       site_type, building_name, building_type, lease_or_own,
+       employee_size_site_json, employee_size_company_wide_json, employee_count_exact,
+       total_sites, estimated_annual_revenue_json, description, contacts_json,
+       evidence_json, raw_source_json, raw_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     candidate.id,
-    candidate.source,
-    candidate.sourceId,
-    candidate.sourceUrl ?? null,
-    candidate.sourceRecordId ?? null,
+    candidate.company.id,
+    candidate.company.legalName,
+    candidate.source.sourceId,
+    candidate.source.sourceName,
+    candidate.source.sourceUrl ?? null,
+    candidate.source.sourceRecordId ?? null,
+    candidate.source.fingerprint,
     candidate.capturedAt,
-    candidate.ingestedAt,
-    candidate.fingerprint,
-    candidate.companyName,
-    candidate.dbaName ?? null,
+    candidate.source.ingestedAt,
+    candidate.physicalAddress?.street ?? null,
+    candidate.physicalAddress?.suite ?? null,
+    candidate.physicalAddress?.city ?? null,
+    candidate.physicalAddress?.state ?? null,
+    candidate.physicalAddress?.postalCode ?? null,
+    candidate.mailingAddress ? JSON.stringify(candidate.mailingAddress) : null,
     candidate.phone ?? null,
     candidate.tollFreePhone ?? null,
-    candidate.address ?? null,
-    candidate.suite ?? null,
-    candidate.city ?? null,
-    candidate.state ?? null,
-    candidate.postalCode ?? null,
+    candidate.market ?? null,
     candidate.county ?? null,
-    candidate.mailingAddress ?? null,
     candidate.siteType ?? null,
-    candidate.employeeCountEstimate ?? null,
-    candidate.employeeSizeCompanyWide ?? null,
+    candidate.buildingName ?? null,
+    candidate.buildingType ?? null,
+    candidate.leaseOrOwn ?? null,
+    candidate.employeeSizeSite ? JSON.stringify(candidate.employeeSizeSite) : null,
+    candidate.employeeSizeCompanyWide ? JSON.stringify(candidate.employeeSizeCompanyWide) : null,
+    candidate.employeeCountExact ?? null,
     candidate.totalSites ?? null,
-    candidate.startYear ?? null,
-    candidate.estimatedAnnualRevenue ?? null,
-    candidate.website ?? null,
-    candidate.emailFormat ?? null,
-    candidate.linkedinUrl ?? null,
-    candidate.teamPageUrl ?? null,
-    candidate.proposedSic ?? null,
-    candidate.relationship ? JSON.stringify(candidate.relationship) : null,
+    candidate.estimatedAnnualRevenue ? JSON.stringify(candidate.estimatedAnnualRevenue) : null,
     candidate.description ?? null,
     JSON.stringify(candidate.contacts),
     JSON.stringify(candidate.evidence),
@@ -188,14 +249,21 @@ export function insertCandidate(db: Database, candidate: CandidateCompany): void
   );
 }
 
-export function loadCandidates(db: Database): CandidateCompany[] {
-  const rows = db.query(`SELECT raw_json FROM candidates`).all() as Array<{ raw_json: string }>;
-  return rows.map((row) => JSON.parse(row.raw_json) as CandidateCompany);
+export function loadLocationCandidates(db: Database): LocationCandidate[] {
+  const rows = db.query(`SELECT raw_json FROM location_candidates`).all() as Array<{ raw_json: string }>;
+  return rows.map((row) => JSON.parse(row.raw_json) as LocationCandidate);
+}
+
+export function loadLocationCandidatesByCompanyId(db: Database, companyIdentityId: string): LocationCandidate[] {
+  const rows = db.query(`
+    SELECT raw_json FROM location_candidates WHERE company_identity_id = ?
+  `).all(companyIdentityId) as Array<{ raw_json: string }>;
+  return rows.map((row) => JSON.parse(row.raw_json) as LocationCandidate);
 }
 
 export function loadExistingCompanies(db: Database): ExistingCompany[] {
   const rows = db.query(`
-    SELECT id, company_name, address, city, state, postal_code, phone, website, status
+    SELECT id, company_name, address, city, state, postal_code, phone, website, sic_code, status
     FROM existing_companies
   `).all() as Array<Record<string, unknown>>;
 
@@ -208,13 +276,14 @@ export function loadExistingCompanies(db: Database): ExistingCompany[] {
     postalCode: row.postal_code ? String(row.postal_code) : undefined,
     phone: row.phone ? String(row.phone) : undefined,
     website: row.website ? String(row.website) : undefined,
+    sicCode: row.sic_code ? String(row.sic_code) : undefined,
     status: row.status as ExistingCompany["status"]
   }));
 }
 
 export function upsertReviewQueue(
   db: Database,
-  candidateId: string,
+  locationCandidateId: string,
   match: MatchResult,
   completeness: ResearchCompletenessResult,
   publicationReadiness: PublicationReadinessResult,
@@ -222,16 +291,17 @@ export function upsertReviewQueue(
 ): void {
   db.query(`
     INSERT INTO review_queue
-      (candidate_id, best_existing_company_id, match_score, match_classification,
-       match_reasons_json, completeness_score, completeness_present_fields_json,
+      (location_candidate_id, best_existing_company_id, match_score, match_classification,
+       match_reasons_json, match_evidence_json, completeness_score, completeness_present_fields_json,
        completeness_missing_fields_json, publication_ready, publication_blocking_reasons_json,
        publication_unresolved_requirements_json, review_priority, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(candidate_id) DO UPDATE SET
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(location_candidate_id) DO UPDATE SET
       best_existing_company_id = excluded.best_existing_company_id,
       match_score = excluded.match_score,
       match_classification = excluded.match_classification,
       match_reasons_json = excluded.match_reasons_json,
+      match_evidence_json = excluded.match_evidence_json,
       completeness_score = excluded.completeness_score,
       completeness_present_fields_json = excluded.completeness_present_fields_json,
       completeness_missing_fields_json = excluded.completeness_missing_fields_json,
@@ -240,11 +310,12 @@ export function upsertReviewQueue(
       publication_unresolved_requirements_json = excluded.publication_unresolved_requirements_json,
       review_priority = excluded.review_priority
   `).run(
-    candidateId,
+    locationCandidateId,
     match.existingCompanyId ?? null,
     match.score,
     match.classification,
     JSON.stringify(match.reasons),
+    JSON.stringify({ companySimilarity: match.companySimilarity, locationSimilarity: match.locationSimilarity }),
     completeness.score,
     JSON.stringify(completeness.presentFields),
     JSON.stringify(completeness.missingFields),
@@ -320,11 +391,11 @@ export function findSourceRecord(
   db: Database,
   sourceId: string,
   fingerprint: string
-): { candidateId: string } | undefined {
+): { locationCandidateId: string } | undefined {
   const row = db.query(`
-    SELECT candidate_id AS candidateId FROM source_records
+    SELECT location_candidate_id AS locationCandidateId FROM source_records
     WHERE source_id = ? AND fingerprint = ?
-  `).get(sourceId, fingerprint) as { candidateId: string } | null;
+  `).get(sourceId, fingerprint) as { locationCandidateId: string } | null;
 
   return row ?? undefined;
 }
@@ -335,20 +406,20 @@ export function insertSourceRecord(
     sourceId: string;
     fingerprint: string;
     sourceRecordId?: string;
-    candidateId: string;
+    locationCandidateId: string;
     firstRunId: string;
     firstIngestedAt: string;
   }
 ): void {
   db.query(`
     INSERT OR IGNORE INTO source_records
-      (source_id, fingerprint, source_record_id, candidate_id, first_run_id, first_ingested_at)
+      (source_id, fingerprint, source_record_id, location_candidate_id, first_run_id, first_ingested_at)
     VALUES (?, ?, ?, ?, ?, ?)
   `).run(
     record.sourceId,
     record.fingerprint,
     record.sourceRecordId ?? null,
-    record.candidateId,
+    record.locationCandidateId,
     record.firstRunId,
     record.firstIngestedAt
   );

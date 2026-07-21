@@ -1,17 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import { evaluatePublicationReadiness } from "./publication-readiness.ts";
 import { researchCompleteness } from "./scoring.ts";
-import type { CandidateCompany } from "./types.ts";
+import type { LocationCandidate } from "./types.ts";
 
-function baseCandidate(overrides: Partial<CandidateCompany> = {}): CandidateCompany {
+function baseCandidate(overrides: Partial<LocationCandidate> = {}): LocationCandidate {
   return {
-    id: "cand-test",
-    source: "Test Source",
-    sourceId: "test-source",
+    id: "loc-test",
+    company: { id: "co-test", legalName: "Test Company" },
+    source: {
+      sourceId: "test-source",
+      sourceName: "Test Source",
+      fingerprint: "test-source:loc-test",
+      ingestedAt: new Date().toISOString()
+    },
     capturedAt: new Date().toISOString(),
-    ingestedAt: new Date().toISOString(),
-    fingerprint: "test-source:cand-test",
-    companyName: "Test Company",
     contacts: [],
     evidence: [],
     ...overrides
@@ -21,14 +23,10 @@ function baseCandidate(overrides: Partial<CandidateCompany> = {}): CandidateComp
 describe("evaluatePublicationReadiness", () => {
   test("a very complete record with zero contacts is NOT publication-ready", () => {
     const candidate = baseCandidate({
-      address: "100 Main St",
-      city: "Dallas",
-      state: "TX",
-      postalCode: "75201",
+      company: { id: "co-test", legalName: "Test Company", website: "example.com", sicCode: "7372" },
+      physicalAddress: { street: "100 Main St", city: "Dallas", state: "TX", postalCode: "75201" },
       phone: "214-555-0100",
-      website: "example.com",
-      employeeCountEstimate: 40,
-      proposedSic: "7372",
+      employeeSizeSite: { estimate: 40 },
       siteType: "headquarters",
       description: "Fully researched record with no known contact",
       contacts: []
@@ -60,7 +58,7 @@ describe("evaluatePublicationReadiness", () => {
   });
 
   test("readiness always reports blocking reasons for unmet confirmed rules", () => {
-    const candidate = baseCandidate({ companyName: "", contacts: [] });
+    const candidate = baseCandidate({ company: { id: "co-test", legalName: "" }, contacts: [] });
     const readiness = evaluatePublicationReadiness(candidate);
     expect(readiness.ready).toBe(false);
     expect(readiness.blockingReasons).toEqual(
@@ -86,6 +84,19 @@ describe("evaluatePublicationReadiness", () => {
     const readiness = evaluatePublicationReadiness(candidate);
     const phoneRequirement = readiness.requirements.find((r) => r.id === "local_phone_or_placeholder");
     expect(phoneRequirement?.satisfied).toBe(true);
+  });
+
+  test("reads company-level fields from candidate.company and location-level fields from the candidate itself", () => {
+    const candidate = baseCandidate({
+      company: { id: "co-test", legalName: "Test Company", website: "example.com", sicCode: "7372" },
+      physicalAddress: { street: "100 Main St", city: "Dallas", state: "TX", postalCode: "75201" },
+      contacts: [{ name: "Jamie Rivera" }]
+    });
+    const readiness = evaluatePublicationReadiness(candidate);
+
+    expect(readiness.requirements.find((r) => r.id === "sic_code")?.satisfied).toBe(true);
+    expect(readiness.requirements.find((r) => r.id === "website")?.satisfied).toBe(true);
+    expect(readiness.requirements.find((r) => r.id === "physical_address_or_exception")?.satisfied).toBe(true);
   });
 });
 

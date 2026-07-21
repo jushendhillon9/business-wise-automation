@@ -1,5 +1,5 @@
 import { normalizePhone } from "./normalize.ts";
-import { hasMeaningfulContact, type CandidateCompany } from "./types.ts";
+import { hasMeaningfulContact, type Address, type LocationCandidate } from "./types.ts";
 
 /**
  * "confirmed_required" rules come directly from an explicit statement in
@@ -42,6 +42,10 @@ export function isAcceptablePhoneValue(phone?: string): boolean {
   return normalizePhone(phone).length === 10;
 }
 
+function isPopulatedAddress(address?: Address): boolean {
+  return Boolean(address?.street?.trim() || address?.city?.trim());
+}
+
 /**
  * BW allows "Not Listed" for the physical street address only when the
  * physical ZIP is known AND a valid mailing address exists. This function
@@ -49,13 +53,16 @@ export function isAcceptablePhoneValue(phone?: string): boolean {
  * blocking rule today because the full required/optional address rules are
  * unconfirmed.
  */
-export function hasAcceptablePhysicalAddress(candidate: CandidateCompany): boolean {
-  const hasFullStreetAddress = Boolean(candidate.address?.trim() && candidate.city?.trim() && candidate.state?.trim() && candidate.postalCode?.trim());
-  const hasZipWithMailingFallback = Boolean(candidate.postalCode?.trim() && candidate.mailingAddress?.trim());
+export function hasAcceptablePhysicalAddress(candidate: LocationCandidate): boolean {
+  const physical = candidate.physicalAddress;
+  const hasFullStreetAddress = Boolean(
+    physical?.street?.trim() && physical?.city?.trim() && physical?.state?.trim() && physical?.postalCode?.trim()
+  );
+  const hasZipWithMailingFallback = Boolean(physical?.postalCode?.trim() && isPopulatedAddress(candidate.mailingAddress));
   return hasFullStreetAddress || hasZipWithMailingFallback;
 }
 
-function buildRequirements(candidate: CandidateCompany): PublicationRequirementCheck[] {
+function buildRequirements(candidate: LocationCandidate): PublicationRequirementCheck[] {
   return [
     {
       id: "min_one_contact",
@@ -68,7 +75,7 @@ function buildRequirements(candidate: CandidateCompany): PublicationRequirementC
       id: "company_name_present",
       label: "Company name present",
       status: "confirmed_required",
-      satisfied: Boolean(candidate.companyName?.trim()),
+      satisfied: Boolean(candidate.company.legalName?.trim()),
       note: "A record cannot be published without a name. Ingestion validation should already guarantee this; checked again here defensively."
     },
     {
@@ -89,14 +96,14 @@ function buildRequirements(candidate: CandidateCompany): PublicationRequirementC
       id: "sic_code",
       label: "SIC code",
       status: "unresolved",
-      satisfied: Boolean(candidate.proposedSic?.trim()),
+      satisfied: Boolean(candidate.company.sicCode?.trim()),
       note: "Listed as a BW key field; required/optional status not confirmed."
     },
     {
       id: "website",
       label: "Website",
       status: "unresolved",
-      satisfied: Boolean(candidate.website?.trim()),
+      satisfied: Boolean(candidate.company.website?.trim()),
       note: "Listed as a BW key field; required/optional status not confirmed."
     },
     {
@@ -110,14 +117,17 @@ function buildRequirements(candidate: CandidateCompany): PublicationRequirementC
 }
 
 /**
- * Rule-based evaluator: does this candidate satisfy BW's actual
- * required-field rules? Deliberately conservative — a candidate is only
- * `ready` if every confirmed_required rule passes. Unresolved rules are
- * surfaced but never block, because the source document's bold/italic
- * (required/optional) formatting was not reliably preserved. This is not a
- * weighted score; it is a pass/fail gate with a transparent reason list.
+ * Rule-based evaluator: does this location candidate — together with its
+ * associated company identity — satisfy BW's actual required-field rules?
+ * Reads company-level fields from candidate.company, location-level fields
+ * from the candidate itself, and contacts from candidate.contacts.
+ * Deliberately conservative — a candidate is only `ready` if every
+ * confirmed_required rule passes. Unresolved rules are surfaced but never
+ * block, because the source document's bold/italic (required/optional)
+ * formatting was not reliably preserved. This is not a weighted score; it is
+ * a pass/fail gate with a transparent reason list.
  */
-export function evaluatePublicationReadiness(candidate: CandidateCompany): PublicationReadinessResult {
+export function evaluatePublicationReadiness(candidate: LocationCandidate): PublicationReadinessResult {
   const requirements = buildRequirements(candidate);
 
   const blockingReasons = requirements

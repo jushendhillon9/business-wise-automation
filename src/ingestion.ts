@@ -2,13 +2,14 @@ import type { Database } from "bun:sqlite";
 import {
   findSourceRecord,
   finishSourceRun,
-  insertCandidate,
+  insertCompanyIdentity,
+  insertLocationCandidate,
   insertSourceRecord,
   startSourceRun
 } from "./db.ts";
 import { computeFingerprint } from "./sources/fingerprint.ts";
 import type { SourceAdapter } from "./sources/types.ts";
-import type { CandidateCompany } from "./types.ts";
+import type { CompanyIdentity, LocationCandidate } from "./types.ts";
 
 export type IngestionSummary = {
   runId: string;
@@ -25,11 +26,17 @@ export type IngestionSummary = {
 };
 
 /**
- * Fetches raw records from a SourceAdapter, maps/validates them into
- * CandidateCompany records, deduplicates against previously-ingested source
- * items, and persists new candidates. Does not touch entity resolution or
- * scoring — that stays in the existing pipeline (run.ts) and operates on
- * whatever candidates end up persisted here.
+ * Fetches raw records from a SourceAdapter, maps/validates them into a
+ * provisional CompanyIdentity + LocationCandidate pair, deduplicates against
+ * previously-ingested source items, and persists new records. Does not touch
+ * entity resolution or scoring — that stays in the existing pipeline
+ * (run.ts) and operates on whatever candidates end up persisted here.
+ *
+ * Ingestion never merges company identities across sources or across rows:
+ * every valid, not-yet-seen source item gets its own fresh CompanyIdentity.
+ * Deciding whether two provisional identities are the same real-world
+ * company is entity resolution's job, done later (see
+ * docs/COMPANY_LOCATION_MODEL.md).
  */
 export async function runIngestion(db: Database, adapter: SourceAdapter): Promise<IngestionSummary> {
   const runId = crypto.randomUUID();
@@ -65,11 +72,11 @@ export async function runIngestion(db: Database, adapter: SourceAdapter): Promis
 
       validCount += 1;
       const draft = mapping.candidate;
-      const fingerprint = computeFingerprint(adapter.sourceId, draft.sourceRecordId, {
-        companyName: draft.companyName,
-        city: draft.city,
-        state: draft.state,
-        address: draft.address,
+      const fingerprint = computeFingerprint(adapter.sourceId, rawRecord.recordId, {
+        companyName: draft.company.legalName,
+        city: draft.physicalAddress?.city,
+        state: draft.physicalAddress?.state,
+        address: draft.physicalAddress?.street,
         sourceUrl: draft.sourceUrl
       });
 
@@ -79,23 +86,34 @@ export async function runIngestion(db: Database, adapter: SourceAdapter): Promis
         continue;
       }
 
-      const candidate: CandidateCompany = {
-        ...draft,
+      const { sourceUrl, company: companyDraft, ...locationFields } = draft;
+
+      const companyIdentity: CompanyIdentity = { ...companyDraft, id: crypto.randomUUID() };
+      insertCompanyIdentity(db, companyIdentity);
+
+      const ingestedAt = new Date().toISOString();
+      const locationCandidate: LocationCandidate = {
+        ...locationFields,
         id: crypto.randomUUID(),
-        source: adapter.sourceName,
-        sourceId: adapter.sourceId,
-        ingestedAt: new Date().toISOString(),
-        fingerprint
+        company: companyIdentity,
+        source: {
+          sourceId: adapter.sourceId,
+          sourceName: adapter.sourceName,
+          sourceUrl,
+          sourceRecordId: rawRecord.recordId,
+          fingerprint,
+          ingestedAt
+        }
       };
 
-      insertCandidate(db, candidate);
+      insertLocationCandidate(db, locationCandidate);
       insertSourceRecord(db, {
         sourceId: adapter.sourceId,
         fingerprint,
-        sourceRecordId: draft.sourceRecordId,
-        candidateId: candidate.id,
+        sourceRecordId: rawRecord.recordId,
+        locationCandidateId: locationCandidate.id,
         firstRunId: runId,
-        firstIngestedAt: candidate.ingestedAt
+        firstIngestedAt: ingestedAt
       });
       newCandidateCount += 1;
     }

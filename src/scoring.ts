@@ -7,7 +7,12 @@ export type ResearchCompletenessResult = {
 };
 
 type CompletenessCheck = {
-  /** Namespaced field identifier: "company.*" for CompanyIdentity fields, "location.*" for LocationCandidate fields. */
+  /**
+   * Namespaced field identifier: "company.*" for CompanyIdentity fields, "location.*" for
+   * LocationCandidate fields, following docs/BWI_DOMAIN_RULES.md §13's convention. That section's
+   * example list also includes "company.startYear", which is not currently one of the checks below
+   * (see docs/COMPANY_LOCATION_MODEL.md's gaps section) — its list is illustrative, not exhaustive.
+   */
   field: string;
   weight: number;
   present: (candidate: LocationCandidate) => boolean;
@@ -64,9 +69,10 @@ export function reviewPriority(
 ): number {
   // Higher = review earlier.
   // Favor likely-new, reasonably complete records in BW's stated core segment:
-  // single-site/HQ companies with 10-99 employees. Records with at least a
-  // few employees but outside that band still get a smaller relevance bump,
-  // per Emily's "4+ employees generally" guidance.
+  // single-site/HQ companies with 10-99 employees (docs/BWI_DOMAIN_RULES.md
+  // §14). Records with at least a few employees but outside that band still
+  // get a smaller relevance bump, per the same section's "generally
+  // prioritize companies with 4+ employees" guidance.
   const likelyNewBonus = match.classification === "likely_new" ? 0.35 : 0;
 
   const employeeCount = candidate.employeeSizeSite?.estimate;

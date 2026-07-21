@@ -3,12 +3,14 @@ import { hasMeaningfulContact, type Address, type LocationCandidate } from "./ty
 
 /**
  * "confirmed_required" rules come directly from an explicit statement in
- * Emily's document and gate `ready`. "unresolved" rules are known BW fields
- * whose bold/italic (required/optional) status we could not reliably
- * recover from the parsed document — they're reported for transparency but
+ * docs/BWI_DOMAIN_RULES.md (originally Emily's document) and gate `ready`.
+ * "unresolved" rules are known BW fields whose required/optional status we
+ * could not confidently act on yet — they're reported for transparency but
  * never block readiness. Promote a rule to confirmed_required only once
- * Emily/Rif/Randall confirm it, or once the original formatting is
- * inspected directly.
+ * Emily/Rif/Randall confirm it. Note: docs/BWI_DOMAIN_RULES.md §8.2 now
+ * documents a broader confirmed-required set than is implemented below (see
+ * docs/COMPANY_LOCATION_MODEL.md's gaps section) — that gap is intentionally
+ * not resolved here per this project's change-control rule (§25).
  */
 export type PublicationRequirementStatus = "confirmed_required" | "unresolved";
 
@@ -31,11 +33,15 @@ export type PublicationReadinessResult = {
 };
 
 /**
- * BW convention per Emily's document: a firm confirmed to exist but with a
- * non-published phone number may be recorded as 000-000-0000. That is a
- * deliberate placeholder, not missing data, so it counts as "present" here.
- * This helper exists so the exception can be reused once phone is promoted
- * to a confirmed requirement; it is not itself a blocking rule today.
+ * BW convention per docs/BWI_DOMAIN_RULES.md §9: a firm confirmed to exist
+ * but with a non-published phone number may be recorded as 000-000-0000.
+ * That is a deliberate placeholder, not missing data, so it counts as
+ * "present" here. §9 also recommends a richer phone-state model (found /
+ * not_published / disconnected / location_closed / virtual_company, ...)
+ * beyond this present/placeholder check — not yet implemented, see
+ * docs/COMPANY_LOCATION_MODEL.md's gaps section. This helper exists so the
+ * placeholder exception can be reused once phone is promoted to a confirmed
+ * requirement; it is not itself a blocking rule today.
  */
 export function isAcceptablePhoneValue(phone?: string): boolean {
   if (!phone) return false;
@@ -48,10 +54,14 @@ function isPopulatedAddress(address?: Address): boolean {
 
 /**
  * BW allows "Not Listed" for the physical street address only when the
- * physical ZIP is known AND a valid mailing address exists. This function
- * models that exception so it can be reused later; it is not itself a
- * blocking rule today because the full required/optional address rules are
- * unconfirmed.
+ * physical ZIP is known AND a valid mailing address exists
+ * (docs/BWI_DOMAIN_RULES.md §10). §10 also recommends a richer address-state
+ * model (physical_address_confirmed / mailing_only / virtual_company /
+ * possible_move / ...) beyond this present/exception check — not yet
+ * implemented, see docs/COMPANY_LOCATION_MODEL.md's gaps section. This
+ * function models the "Not Listed" exception so it can be reused later; it
+ * is not itself a blocking rule today because the full required/optional
+ * address rules are unconfirmed.
  */
 export function hasAcceptablePhysicalAddress(candidate: LocationCandidate): boolean {
   const physical = candidate.physicalAddress;
@@ -69,7 +79,7 @@ function buildRequirements(candidate: LocationCandidate): PublicationRequirement
       label: "At least one contact",
       status: "confirmed_required",
       satisfied: hasMeaningfulContact(candidate.contacts),
-      note: "Explicitly stated in Emily's document: minimum 1 contact required to publish."
+      note: "Explicitly stated in docs/BWI_DOMAIN_RULES.md §7: minimum 1 contact required to publish."
     },
     {
       id: "company_name_present",
@@ -83,35 +93,35 @@ function buildRequirements(candidate: LocationCandidate): PublicationRequirement
       label: "Local phone number (or confirmed non-published placeholder)",
       status: "unresolved",
       satisfied: isAcceptablePhoneValue(candidate.phone),
-      note: "Listed as a BW key field; bold/italic (required/optional) status not confirmed from the source document's formatting."
+      note: "docs/BWI_DOMAIN_RULES.md §8.2 now lists this as a confirmed base blocker; not yet promoted here — see docs/COMPANY_LOCATION_MODEL.md's gaps section."
     },
     {
       id: "physical_address_or_exception",
       label: "Physical address (or ZIP + valid mailing address exception)",
       status: "unresolved",
       satisfied: hasAcceptablePhysicalAddress(candidate),
-      note: "BW allows 'Not Listed' street address only with known ZIP + valid mailing address; required/optional status not confirmed."
+      note: "docs/BWI_DOMAIN_RULES.md §8.2 now lists this as a confirmed base blocker; not yet promoted here — see docs/COMPANY_LOCATION_MODEL.md's gaps section."
     },
     {
       id: "sic_code",
       label: "SIC code",
       status: "unresolved",
       satisfied: Boolean(candidate.company.sicCode?.trim()),
-      note: "Listed as a BW key field; required/optional status not confirmed."
+      note: "docs/BWI_DOMAIN_RULES.md §8.2 now lists this as a confirmed base blocker; not yet promoted here — see docs/COMPANY_LOCATION_MODEL.md's gaps section."
     },
     {
       id: "website",
       label: "Website",
       status: "unresolved",
       satisfied: Boolean(candidate.company.website?.trim()),
-      note: "Listed as a BW key field; required/optional status not confirmed."
+      note: "Listed as a BW key field in docs/BWI_DOMAIN_RULES.md §6.1; not listed among §8.2's confirmed base blockers, so kept unresolved."
     },
     {
       id: "site_type",
       label: "Site Type (S/H/B/R)",
       status: "unresolved",
       satisfied: Boolean(candidate.siteType),
-      note: "Listed as a BW key field; required/optional status not confirmed."
+      note: "docs/BWI_DOMAIN_RULES.md §8.2 now lists this as a confirmed base blocker; not yet promoted here — see docs/COMPANY_LOCATION_MODEL.md's gaps section."
     }
   ];
 }

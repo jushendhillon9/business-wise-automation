@@ -5,6 +5,10 @@
 **Scope:** Business Wise company/location research, publication readiness, lifecycle, client utility, and human review  
 **Not in scope:** Underlying SQL schema, ADF/sync architecture, Delphi write behavior, or production writeback
 
+**Related documents:** [`README.md`](../README.md) (how the code implements a subset of these rules today) and
+[`docs/COMPANY_LOCATION_MODEL.md`](./COMPANY_LOCATION_MODEL.md) (the `CompanyIdentity`/`LocationCandidate` domain
+model this document informs, plus a running list of gaps between this document and the current implementation).
+
 ---
 
 ## 1. Purpose

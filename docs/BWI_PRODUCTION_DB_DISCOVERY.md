@@ -397,9 +397,8 @@ records reported for batches that contain only 100–200 items total.
 **Those inflated values are invalid. They must not be cited or reused anywhere in this repository or in future
 analysis.**
 
-The valid unchecked totals shown in §11 above came from a separate, corrected batch-item aggregation that does
-**not** join through `ResearchStatus` before counting — i.e., it aggregates `DirProjectBatchItem` on its own terms
-and only checks `ResearchStatus` state per item without multiplying rows.
+The valid unchecked totals shown in §11 came from a separate aggregation over `DirProjectBatchItem` without joining
+`ResearchStatus`. This prevented individual batch items from being duplicated across multiple `ResearchStatus` rows.
 
 ---
 
@@ -589,8 +588,9 @@ path are verified") and this repo's stated non-goals in `README.md`.
 
 ## 19. Validation notes
 
-This document was reviewed for internal contradictions before being added to the repository. No existing repository
-documentation was modified as part of this task.
+This document was reviewed for internal contradictions before being added to the repository. No existing technical,
+domain, or architecture documentation was substantively rewritten during this task. README.md received only a
+concise link to this discovery record.
 
 One point of terminology worth flagging for a future pass (not resolved here, per this task's documentation-only
 scope): `BWI_DOMAIN_RULES.md` §22 lists "triggers, stored procedures, services, or batch jobs" as unresolved

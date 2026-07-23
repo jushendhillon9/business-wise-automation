@@ -279,25 +279,27 @@ domain type or rule evaluator, then tests. This section is the reverse index: wh
 intentionally a subset of (or a simpler encoding of) what that document describes, tracked here rather than silently
 implemented or silently ignored.
 
-### Contradiction worth flagging: publication-readiness confirmed-required set
+### Resolved: publication-readiness confirmed-required set
 
 `BWI_DOMAIN_RULES.md` §8.2 lists the blank BWI **New Company Profile**'s confirmed base blockers (evidence-labeled
 Confirmed, from a screenshot showing required fields in green): company name, alphasort, physical address (or
 approved exception), mailing address (or approved exception), local phone (or approved exception), building type,
 site type, employee-size band at this site, start year, SIC code/description, and at least one meaningful contact.
+§8.3 additionally requires company-wide employee size, revenue band, and total sites for Single Site/Headquarters
+records.
 
-`src/publication-readiness.ts` currently only treats **two** of those as `confirmed_required`
-(`min_one_contact`, `company_name_present`). Local phone, physical address, SIC code, website, and site type are
-modeled but marked `unresolved` (non-blocking) — see the README's "Publication readiness rules currently
-implemented" section for why (the bold/italic formatting behind the original required-field list wasn't reliably
-preserved, so the code stayed conservative). §8.2 is now more specific evidence than what motivated that conservative
-default. Promoting these rules from `unresolved` to `confirmed_required` (and adding alphasort, building type, and
-start year, none of which are checked today) is a deliberate follow-up code change, not done as part of this
-documentation pass per this task's constraints — it belongs in a later numbered task.
+**Implementation status (Task 5):** `evaluatePublicationReadiness()` (`src/publication-readiness.ts`) now implements
+the full §8.2 base set and §8.3's conditional set, as a three-state `PublicationReadinessAssessment`
+(`blocked`/`provisionally_ready`/`confirmed_ready`) rather than a `ready` boolean — see the README's "Publication
+readiness: three states" section. Website remains intentionally unmodeled as a readiness rule: it is not part of
+§8.2's confirmed base set nor §8.4's confirmed optional set, and its required/optional status stays genuinely
+unresolved per §8.5.
 
 ### Fields described in BWI_DOMAIN_RULES.md but not yet modeled
 
-- **Company identity (§6.1):** alphasort/sort name, SIC description, NAICS code.
+- **Company identity (§6.1):** alphasort/sort name is now minimally modeled (`CompanyIdentity.alphasort`, presence
+  only, no formatting/normalization rules) so publication readiness can check it — see above. SIC description and
+  NAICS code remain unmodeled.
 - **Location (§6.2):** phone 2, lease expiration, square footage, rumored move, latitude/longitude.
 - **Contacts (§7):** functional title/category (as distinct from `title`), contact LinkedIn URL, contact
   lifecycle/research status, and the recommended `contact_coverage_score` depth metric.
@@ -309,21 +311,24 @@ documentation pass per this task's constraints — it belongs in a later numbere
 ### Richer state modeling described but not yet implemented
 
 - **Phone (§9)** and **address (§10)** are each recommended to be modeled as a small state enum (e.g.
-  `phone_not_published` vs `phone_disconnected` vs `location_closed`), not `string | undefined`. The code already
-  special-cases the `000-000-0000` placeholder (`isAcceptablePhoneValue` in `src/publication-readiness.ts`) but does
-  not otherwise distinguish these states.
-- **Publication status (§8.1)** recommends a tri-state `blocked | provisionally_ready | confirmed_ready` status. The
-  code encodes the same information as a boolean `ready` plus `blockingReasons`/`unresolvedRequirements` arrays,
-  which is derivable into the tri-state (`blocked` when `!ready`; `confirmed_ready` when `ready` and
-  `unresolvedRequirements` is empty; `provisionally_ready` otherwise) but does not expose it as a named value today.
+  `phone_not_published` vs `phone_disconnected` vs `location_closed`), not `string | undefined`, on
+  `LocationCandidate` itself. The readiness evaluator's internal `classifyLocalPhone()`
+  (`src/publication-readiness.ts`, Task 5) now distinguishes valid-phone / approved-000-000-0000-placeholder /
+  exception-potentially-applicable-but-unresolved / neither-present as a readiness-time computation, but this is
+  still not the richer persisted phone-state field §9 describes — `LocationCandidate.phone` stays `string | undefined`.
+- ~~**Publication status (§8.1)** recommends a tri-state `blocked | provisionally_ready | confirmed_ready`
+  status.~~ **Implemented (Task 5):** `PublicationReadinessAssessment.state` (`src/publication-readiness.ts`) is
+  exactly this named tri-state value, replacing the earlier boolean `ready` + `blockingReasons`/
+  `unresolvedRequirements` shape.
 - ~~**BWI status lifecycle (§4)** recommends preserving a raw `rawBwiStatus: string` mapped separately to a
   normalized lifecycle enum.~~ **Implemented:** `ExistingCompany.status` (raw) + `ExistingCompany.lifecycleStatus`
   (normalized via `normalizeBwiLifecycleStatus()`) — see "Normalizing BWI legacy codes without losing raw values"
   above. The *which spelling is canonical* question (§4, §23.1) remains genuinely unresolved and is not answered by
   this normalization — both `RDL` and `RDEL` are still preserved as distinct raw values.
-- **Conditional corporate-office requirements (§8.3):** company-wide employee size, total sites, and estimated
-  revenue are described as required for `single_site`/`headquarters` records. These fields exist on
-  `LocationCandidate` but are not yet checked by `evaluatePublicationReadiness()` at all (not even as `unresolved`).
+- ~~**Conditional corporate-office requirements (§8.3):** company-wide employee size, total sites, and estimated
+  revenue are described as required for `single_site`/`headquarters` records.~~ **Implemented (Task 5):** checked as
+  applicable-conditional confirmed requirements in `evaluatePublicationReadiness()` — never reported at all for
+  `branch`/`regional_headquarters` records, since the rule genuinely doesn't apply to them.
 
 ### Entity-resolution comparison layers described but not yet compared
 

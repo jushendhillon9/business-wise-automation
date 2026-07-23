@@ -42,29 +42,36 @@ describe("researchCompleteness", () => {
     // a candidate can have a low research score while still being
     // "not publication ready" for entirely separate (rule-based) reasons
     const readiness = evaluatePublicationReadiness(sparse);
-    expect(readiness.ready).toBe(false);
-    expect(readiness.blockingReasons).not.toEqual([]);
+    expect(readiness.state).toBe("blocked");
+    expect(readiness.blockers).not.toEqual([]);
   });
 
-  test("missing optional research fields lower completeness but are not publication blockers", () => {
+  test("missing optional research fields (website) lower completeness but are not publication blockers", () => {
     const candidate = baseCandidate({
-      phone: undefined,
-      company: { id: "co-test", legalName: "Test Company", website: undefined, sicCode: undefined },
+      company: {
+        id: "co-test",
+        legalName: "Test Company",
+        alphasort: "TEST COMPANY",
+        website: undefined,
+        sicCode: "7372",
+        startYear: 2015
+      },
+      physicalAddress: { street: "100 Main St", city: "Dallas", state: "TX", postalCode: "75201" },
+      phone: "214-555-0100",
+      buildingType: "office",
+      siteType: "branch",
+      employeeSizeSite: { estimate: 25 },
       contacts: [{ name: "Jamie Rivera", email: "jamie@example.com" }]
     });
 
     const completeness = researchCompleteness(candidate);
-    expect(completeness.missingFields).toEqual(
-      expect.arrayContaining(["location.phone", "company.website", "company.sicCode", "location.description"])
-    );
+    expect(completeness.missingFields).toEqual(expect.arrayContaining(["company.website", "location.description"]));
 
+    // website is not one of the confirmed base/conditional requirements
+    // (docs/BWI_DOMAIN_RULES.md §8.2/§8.3), so it never blocks readiness
     const readiness = evaluatePublicationReadiness(candidate);
-    // the only confirmed_required rule (a contact) is satisfied, so missing
-    // phone/website/SIC do not block readiness today
-    expect(readiness.ready).toBe(true);
-    expect(readiness.blockingReasons).toEqual([]);
-    // but they should still show up as unresolved/known gaps for transparency
-    expect(readiness.unresolvedRequirements.length).toBeGreaterThan(0);
+    expect(readiness.state).toBe("confirmed_ready");
+    expect(readiness.blockers).toEqual([]);
   });
 
   test("reports namespaced present/missing fields for both company- and location-level data", () => {
@@ -94,11 +101,11 @@ describe("reviewPriority", () => {
     const priorityWith = reviewPriority(withContact, match, completenessWith.score);
     const priorityWithout = reviewPriority(withoutContact, match, completenessWithout.score);
 
-    // publication readiness differs (one is ready, one is not) but that must
-    // not be why the priorities differ -- any difference here comes only
-    // from research completeness, which reviewPriority already accounts for
-    expect(evaluatePublicationReadiness(withContact).ready).toBe(true);
-    expect(evaluatePublicationReadiness(withoutContact).ready).toBe(false);
+    // publication readiness differs (one has a contact blocker, one doesn't)
+    // but that must not be why the priorities differ -- any difference here
+    // comes only from research completeness, which reviewPriority already accounts for
+    expect(evaluatePublicationReadiness(withContact).blockers.map((b) => b.ruleId)).not.toContain("min_one_contact");
+    expect(evaluatePublicationReadiness(withoutContact).blockers.map((b) => b.ruleId)).toContain("min_one_contact");
     expect(priorityWith).not.toBe(priorityWithout);
 
     // proof of independence: two candidates with identical research

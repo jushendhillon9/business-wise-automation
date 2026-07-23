@@ -11,8 +11,7 @@ type ReviewQueueRow = {
   resolutionMatchedExistingCompanyId: string | null;
   resolutionRequiresHumanReview: number;
   completenessScore: number;
-  publicationReady: number;
-  publicationBlockingReasonsJson: string;
+  publicationState: string;
   reviewPriority: number;
   reviewStatus: string;
 };
@@ -26,8 +25,7 @@ const reviewRows = db.query(`
     resolution_matched_existing_company_id AS resolutionMatchedExistingCompanyId,
     resolution_requires_human_review AS resolutionRequiresHumanReview,
     ROUND(completeness_score, 3) AS completenessScore,
-    publication_ready AS publicationReady,
-    publication_blocking_reasons_json AS publicationBlockingReasonsJson,
+    publication_state AS publicationState,
     ROUND(review_priority, 3) AS reviewPriority,
     review_status AS reviewStatus
   FROM review_queue
@@ -64,7 +62,7 @@ const table = reviewRows.map((row) => {
     classification: row.matchClassification,
     matchScore: row.matchScore,
     researchCompleteness: row.completenessScore,
-    publicationReady: row.publicationReady ? "yes" : "no",
+    publicationState: row.publicationState,
     priority: row.reviewPriority,
     reviewStatus: row.reviewStatus
   };

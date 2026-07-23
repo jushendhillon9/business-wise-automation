@@ -104,39 +104,57 @@ and **none of them is approval** — a human still reviews and approves or rejec
    `company.website` vs `location.phone`) over the fields we currently model. A high completeness score does not
    mean the record is eligible to publish.
 3. **Publication readiness** (`src/publication-readiness.ts`, `evaluatePublicationReadiness()`) — "Does this
-   candidate satisfy Business Wise's actual required-field rules?" This is a rule-based pass/fail gate, not a
-   percentage. It returns `ready`, `blockingReasons` (unmet rules we're confident are real requirements), and
-   `unresolvedRequirements` (known BW fields whose required/optional status we haven't confirmed — see below).
+   candidate satisfy Business Wise's actual required-field rules for a human-reviewed BWI research packet?" This is
+   a structured, three-state assessment (`state: "blocked" | "provisionally_ready" | "confirmed_ready"`), not a
+   percentage and not a plain boolean — see "Publication readiness: three states" below. Readiness never authorizes
+   a direct write or publish in production; see `docs/BWI_PRODUCTION_DB_DISCOVERY.md`.
 4. **Review priority** (`src/scoring.ts`, `reviewPriority()`) — "Which candidate should a human look at first?" Built
    from entity resolution and research completeness only. It is intentionally independent of publication readiness:
-   a high-priority record (e.g. a well-researched likely-new company in BW's core segment) can still be
-   not-publication-ready, and a publication-ready record isn't automatically high priority.
+   a high-priority record (e.g. a well-researched likely-new company in BW's core segment) can still be blocked, and
+   a `confirmed_ready` record isn't automatically high priority.
 
-### Publication readiness rules currently implemented
+### Publication readiness: three states
 
-Emily's "AI Research" document marks required fields in bold and optional fields in italics, but the parsed text we
-originally had did not reliably preserve that formatting. Rather than guess a full required-field list from
-unreliable formatting, `evaluatePublicationReadiness()` only treats a rule as blocking (`confirmed_required`) when
-we were confident it was actually required:
+`evaluatePublicationReadiness()` (`src/publication-readiness.ts`) returns a `PublicationReadinessAssessment` — the
+single source of truth for readiness in this codebase; there is no separate binary readiness calculation anywhere
+else:
 
-- **`min_one_contact`** — at least one contact with a name or email is required to publish. (Explicit in
-  `docs/BWI_DOMAIN_RULES.md` §7.)
-- **`company_name_present`** — defensive check; ingestion should already guarantee this.
+```ts
+type PublicationReadinessAssessment = {
+  state: "blocked" | "provisionally_ready" | "confirmed_ready";
+  blockers: PublicationReadinessIssue[];             // confirmed requirements definitely unsatisfied
+  unresolvedRules: PublicationReadinessIssue[];       // material rules still needing human confirmation
+  satisfiedRequirements: PublicationReadinessRequirement[];
+  optionalMissingFields: string[];                    // never affects state
+};
+```
 
-Everything else the domain reference lists as a BW key field — local phone (with the "000-000-0000 means confirmed
-but non-published" exception), physical address (with the "Not Listed allowed only with known ZIP + valid mailing
-address" exception), SIC code, website, Site Type — is modeled and reported as `status: "unresolved"`:
-it shows up in `unresolvedRequirements` when missing, but **never blocks `ready`**.
+- **`blocked`** — at least one confirmed base requirement, or an applicable conditional requirement, is definitely
+  unsatisfied (missing, invalid, or a required exception is absent).
+- **`provisionally_ready`** — no definite blocker, but at least one material rule still needs human confirmation
+  (today: a local phone is missing but the physical location is confirmed, so BW's 000-000-0000 non-published-phone
+  exception (`docs/BWI_DOMAIN_RULES.md` §9) may apply but isn't yet confirmed). Never used as a generic fallback for
+  ordinary incomplete records — definite missing required data is `blocked`.
+- **`confirmed_ready`** — every applicable confirmed base and conditional requirement is satisfied and no material
+  rule remains unresolved. Optional missing fields never affect this.
 
-> **Known contradiction, not yet resolved in code:** `docs/BWI_DOMAIN_RULES.md` §8.2 now lists the blank BWI "New
-> Company Profile"'s confirmed base blockers with **Confirmed** evidence status (from a screenshot showing required
-> fields in green) — company name, alphasort, physical address (or exception), mailing address (or exception), local
-> phone (or exception), building type, site type, employee-size band, start year, SIC code/description, and at least
-> one contact. That is a materially larger confirmed-required set than the two rules implemented today. Per this
-> project's change-control rule (`docs/BWI_DOMAIN_RULES.md` §25), promoting the rest of §8.2 from `unresolved` to
-> `confirmed_required` — and adding the unmodeled fields (alphasort, start year check, building type check) — is a
-> deliberate code change for a later numbered task, not done automatically just because the reference document says
-> so. See `docs/COMPANY_LOCATION_MODEL.md` → "Known gaps vs. BWI_DOMAIN_RULES.md" for the full breakdown.
+The confirmed base requirements (`docs/BWI_DOMAIN_RULES.md` §8.2, from the blank BWI "New Company Profile"'s
+required-in-green fields) are: company name, alphasort, physical address (or ZIP + valid mailing address exception),
+local phone (or the 000-000-0000 exception), building type, site type, employee size at the site, start year, SIC
+code, and at least one meaningful contact. Single Site/Headquarters records additionally require (§8.3)
+company-wide employee size, estimated revenue band, and total sites — Branch/Regional Headquarters records are not
+blocked by those three. Square footage, lease expiration, email format, and parent-company information (§8.4) are
+confirmed optional and only ever appear in `optionalMissingFields`, never `blockers`.
+
+Every issue (`PublicationReadinessIssue`) carries a stable `ruleId`, a `scope` (`company`/`location`/`contact`), a
+human-readable `explanation`, whether an approved exception could satisfy it, and the normalized/raw value
+considered — both machine- and human-readable, not just a list of missing field names.
+
+**Compatibility boolean:** `isPublicationReadyCompat(assessment)` (`src/publication-readiness.ts`) returns
+`assessment.state === "confirmed_ready"`, for consumers not yet reading `state` directly (the sandbox DB's
+`review_queue.publication_ready` column). It is always derived from the structured assessment, never calculated
+independently, and is marked `TODO(remove)` — delete it once every consumer reads `publication_state`/`state`
+directly. `provisionally_ready` is deliberately **not** publication-ready under this boolean.
 
 ### Known BWI status discrepancy — unresolved
 
@@ -216,11 +234,12 @@ Two local fixture adapters prove the architecture until a real DFW feed is avail
 | `dfw-json`| `src/sources/dfw-json-adapter.ts` | `data/sources/dfw-json-sample.json` |
 | `dfw-csv` | `src/sources/dfw-csv-adapter.ts`  | `data/sources/dfw-county-licenses-sample.csv` |
 
-Each fixture intentionally includes: a fully-populated record with a contact (publication-ready), a record with only
-name+city, a record missing phone, a record missing employee count, a record with a source URL, an exact duplicate
-row within the same file, and a malformed row (no company name) that gets skipped without crashing the run. Only two
-of the nine ingested candidates have a contact; the rest demonstrate `publicationReady: false` even when reasonably
-complete. Three records also carry a raw BWI site-type code to exercise `normalizeBwiSiteType()` end to end: Pioneer
+Each fixture intentionally includes: a fully-populated record with a contact, a record with only name+city, a record
+missing phone, a record missing employee count, a record with a source URL, an exact duplicate row within the same
+file, and a malformed row (no company name) that gets skipped without crashing the run. Only two of the nine
+ingested candidates have a contact. None of the fixtures set every confirmed-required field from
+`docs/BWI_DOMAIN_RULES.md` §8.2 (e.g. none set `company.alphasort`), so all nine currently evaluate to
+`state: "blocked"` — see "Expected behavior with the sample data" below. Three records also carry a raw BWI site-type code to exercise `normalizeBwiSiteType()` end to end: Pioneer
 Steel Fabricators (`"H"` → `headquarters`), Blue Cactus Roasters (`"s"` → `single_site`), Harbor Point Consulting
 (`"b"` → `branch`), and Trinity Grove Bakery Co carries an unrecognized code (`"Q"` → `unknown`,
 `recognized: false`) to prove an unmapped code doesn't crash ingestion. All four are records with no employee count,
@@ -278,12 +297,17 @@ Expected behavior with the sample data (`bun run reset && bun run queue`):
   `src/entity-resolution-policy.test.ts` for focused fixtures exercising `same_existing_location`,
   `new_branch_of_existing_company`, `possible_name_change`, `ambiguous_manual_review`, and the rest — deliberately
   not mixed into this demo data, per the "prefer focused test fixtures over polluting the queue demo" guidance.
-- Only **Westline Freight Solutions** and **Ridgeline Precision Machining** — the two fixture records with a
-  contact — show `publicationReady: yes`. Every other candidate is blocked on `min_one_contact`, regardless of how
-  complete or high-priority it is.
+- All 9 candidates currently evaluate to `state: "blocked"`, because none of the fixtures sets every confirmed
+  base requirement (`docs/BWI_DOMAIN_RULES.md` §8.2) — e.g. none sets `company.alphasort` or `location.buildingType`.
+  The fixtures were written before `evaluatePublicationReadiness()` implemented the full §8.2/§8.3 rule set and are
+  a fair demonstration case for `blockers`/`unresolvedRules` reporting, not for reaching `confirmed_ready`; see
+  `src/publication-readiness.test.ts` for fixtures that do reach every state.
+- **Westline Freight Solutions** and **Ridgeline Precision Machining** are the only two fixture records with a
+  contact, so they're the only two candidates never blocked on `min_one_contact` — every other candidate is,
+  regardless of how complete or high-priority it is.
 - **Cedar Ridge Analytics** is a good example of the four-concepts split: it has relatively high research
-  completeness and review priority (it falls in the 10–99 employee core segment) while still `publicationReady:
-  no` — priority and completeness never imply approval.
+  completeness and review priority (it falls in the 10–99 employee core segment) while still `state: "blocked"` —
+  priority and completeness never imply readiness, and readiness never implies approval or production write access.
 
 `data/candidates.sample.json` is the original, pre-ingestion-layer, pre-company/location-split fixture and is no
 longer read by any script; it's kept only for reference and does not reflect the current domain model. New sample
@@ -298,7 +322,7 @@ Emily/Jen/Rif/Randall before more rules can move from `unresolved` to implemente
 code-focused follow-ups building on that:
 
 1. Plug in a real DFW source (chamber report export, business journal feed, or county license dataset) behind a new `SourceAdapter`.
-2. Promote the broader confirmed-required set in `docs/BWI_DOMAIN_RULES.md` §8.2 (physical address, local phone, SIC, site type, building type, alphasort, start year) from `unresolved`/unmodeled to `confirmed_required` in `src/publication-readiness.ts`, once the team decides the evidence in §8.2 is sufficient to act on — see `docs/COMPANY_LOCATION_MODEL.md`'s gaps section for the current state.
+2. ~~Promote the broader confirmed-required set in `docs/BWI_DOMAIN_RULES.md` §8.2 to `confirmed_required`.~~ **Done** — `evaluatePublicationReadiness()` now implements the full §8.2 base set and §8.3's conditional Single Site/Headquarters requirements as a three-state `PublicationReadinessAssessment` (`blocked`/`provisionally_ready`/`confirmed_ready`); see "Publication readiness: three states" above.
 3. Resolve which BWI status string is actually persisted (`DIRE`/`DEL`/`RDEL` vs. `RDL`/`research`,
    `docs/BWI_DOMAIN_RULES.md` §23.1–2), and either collapse `ExistingCompanyStatus` accordingly or pick a canonical
    writeback spelling for `research_deleted` in `src/business-wise-adapter.ts`. (The raw/normalized split itself —

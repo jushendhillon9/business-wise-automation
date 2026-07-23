@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { normalizeBwiLifecycleStatus } from "./bwi-codes.ts";
-import type { PublicationReadinessResult } from "./publication-readiness.ts";
+import { isPublicationReadyCompat, type PublicationReadinessAssessment } from "./publication-readiness.ts";
 import type { ResearchCompletenessResult } from "./scoring.ts";
 import type { CompanyIdentity, EntityResolutionDecision, ExistingCompany, LocationCandidate, MatchResult } from "./types.ts";
 
@@ -103,9 +103,19 @@ export function createSchema(db: Database): void {
       FOREIGN KEY(company_identity_id) REFERENCES company_identities(id)
     );
 
-    -- Publication readiness is a rule-based gate (see src/publication-readiness.ts),
-    -- not a weighted score. research completeness is a separate descriptive score
-    -- of how much we know. Neither implies the other, and neither implies approval.
+    -- Publication readiness is a structured, three-state assessment (see
+    -- PublicationReadinessAssessment in src/publication-readiness.ts) -- not a
+    -- weighted score, and not a plain boolean. research completeness is a
+    -- separate descriptive score of how much we know. Neither implies the
+    -- other, and neither implies approval or authorization to write/publish
+    -- in production (see docs/BWI_PRODUCTION_DB_DISCOVERY.md).
+    --
+    -- publication_state is the source of truth: 'blocked' | 'provisionally_ready'
+    -- | 'confirmed_ready'. publication_ready is a TEMPORARY compatibility
+    -- column derived from it (1 only when publication_state = 'confirmed_ready')
+    -- for consumers not yet reading publication_state directly -- see
+    -- isPublicationReadyCompat() in src/publication-readiness.ts.
+    -- TODO(remove): drop publication_ready once every consumer reads publication_state.
     --
     -- Two distinct entity-resolution layers are both persisted here, deliberately
     -- kept in separate columns rather than overloading one "classification" value:
@@ -136,9 +146,12 @@ export function createSchema(db: Database): void {
       completeness_score REAL NOT NULL,
       completeness_present_fields_json TEXT NOT NULL DEFAULT '[]',
       completeness_missing_fields_json TEXT NOT NULL DEFAULT '[]',
+      publication_state TEXT NOT NULL DEFAULT 'blocked',
+      publication_blockers_json TEXT NOT NULL DEFAULT '[]',
+      publication_unresolved_rules_json TEXT NOT NULL DEFAULT '[]',
+      publication_satisfied_requirements_json TEXT NOT NULL DEFAULT '[]',
+      publication_optional_missing_fields_json TEXT NOT NULL DEFAULT '[]',
       publication_ready INTEGER NOT NULL DEFAULT 0,
-      publication_blocking_reasons_json TEXT NOT NULL DEFAULT '[]',
-      publication_unresolved_requirements_json TEXT NOT NULL DEFAULT '[]',
       review_priority REAL NOT NULL,
       review_status TEXT NOT NULL DEFAULT 'pending',
       reviewer_note TEXT,
@@ -319,7 +332,7 @@ export function upsertReviewQueue(
   match: MatchResult,
   resolution: EntityResolutionDecision,
   completeness: ResearchCompletenessResult,
-  publicationReadiness: PublicationReadinessResult,
+  publicationReadiness: PublicationReadinessAssessment,
   priority: number
 ): void {
   db.query(`
@@ -330,9 +343,10 @@ export function upsertReviewQueue(
        resolution_matched_existing_company_id, resolution_related_existing_company_ids_json,
        resolution_alternative_matches_json, resolution_requires_human_review,
        completeness_score, completeness_present_fields_json,
-       completeness_missing_fields_json, publication_ready, publication_blocking_reasons_json,
-       publication_unresolved_requirements_json, review_priority, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       completeness_missing_fields_json, publication_state, publication_blockers_json,
+       publication_unresolved_rules_json, publication_satisfied_requirements_json,
+       publication_optional_missing_fields_json, publication_ready, review_priority, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(location_candidate_id) DO UPDATE SET
       best_existing_company_id = excluded.best_existing_company_id,
       match_score = excluded.match_score,
@@ -350,9 +364,12 @@ export function upsertReviewQueue(
       completeness_score = excluded.completeness_score,
       completeness_present_fields_json = excluded.completeness_present_fields_json,
       completeness_missing_fields_json = excluded.completeness_missing_fields_json,
+      publication_state = excluded.publication_state,
+      publication_blockers_json = excluded.publication_blockers_json,
+      publication_unresolved_rules_json = excluded.publication_unresolved_rules_json,
+      publication_satisfied_requirements_json = excluded.publication_satisfied_requirements_json,
+      publication_optional_missing_fields_json = excluded.publication_optional_missing_fields_json,
       publication_ready = excluded.publication_ready,
-      publication_blocking_reasons_json = excluded.publication_blocking_reasons_json,
-      publication_unresolved_requirements_json = excluded.publication_unresolved_requirements_json,
       review_priority = excluded.review_priority
   `).run(
     locationCandidateId,
@@ -372,9 +389,12 @@ export function upsertReviewQueue(
     completeness.score,
     JSON.stringify(completeness.presentFields),
     JSON.stringify(completeness.missingFields),
-    publicationReadiness.ready ? 1 : 0,
-    JSON.stringify(publicationReadiness.blockingReasons),
-    JSON.stringify(publicationReadiness.unresolvedRequirements),
+    publicationReadiness.state,
+    JSON.stringify(publicationReadiness.blockers),
+    JSON.stringify(publicationReadiness.unresolvedRules),
+    JSON.stringify(publicationReadiness.satisfiedRequirements),
+    JSON.stringify(publicationReadiness.optionalMissingFields),
+    isPublicationReadyCompat(publicationReadiness) ? 1 : 0,
     priority,
     new Date().toISOString()
   );
@@ -395,6 +415,12 @@ export type ReviewQueueRow = {
   resolutionAlternativeMatches: MatchResult[];
   resolutionRequiresHumanReview: boolean;
   completenessScore: number;
+  publicationState: PublicationReadinessAssessment["state"];
+  publicationBlockers: PublicationReadinessAssessment["blockers"];
+  publicationUnresolvedRules: PublicationReadinessAssessment["unresolvedRules"];
+  publicationSatisfiedRequirements: PublicationReadinessAssessment["satisfiedRequirements"];
+  publicationOptionalMissingFields: string[];
+  /** TEMPORARY compatibility boolean, derived from publicationState. TODO(remove) once consumers read publicationState directly. */
   publicationReady: boolean;
   reviewPriority: number;
   reviewStatus: string;
@@ -421,6 +447,11 @@ export function loadReviewQueue(db: Database): ReviewQueueRow[] {
     resolutionAlternativeMatches: JSON.parse(String(row.resolution_alternative_matches_json)),
     resolutionRequiresHumanReview: Boolean(row.resolution_requires_human_review),
     completenessScore: Number(row.completeness_score),
+    publicationState: String(row.publication_state) as PublicationReadinessAssessment["state"],
+    publicationBlockers: JSON.parse(String(row.publication_blockers_json)),
+    publicationUnresolvedRules: JSON.parse(String(row.publication_unresolved_rules_json)),
+    publicationSatisfiedRequirements: JSON.parse(String(row.publication_satisfied_requirements_json)),
+    publicationOptionalMissingFields: JSON.parse(String(row.publication_optional_missing_fields_json)),
     publicationReady: Boolean(row.publication_ready),
     reviewPriority: Number(row.review_priority),
     reviewStatus: String(row.review_status)

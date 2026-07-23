@@ -119,6 +119,12 @@ export type CompanyIdentity = {
   legalName: string;
   /** "Doing business as" name, when it differs from the legal/registered name. */
   dbaName?: string;
+  /**
+   * Search/sort name (docs/BWI_DOMAIN_RULES.md §6.1). Confirmed required on the blank BWI New
+   * Company Profile (§8.2). Minimally modeled here (presence only, no formatting rules) so
+   * src/publication-readiness.ts can check it; see docs/COMPANY_LOCATION_MODEL.md's gaps list.
+   */
+  alphasort?: string;
 
   website?: string;
   emailFormat?: string;
@@ -410,6 +416,7 @@ export type ReviewQueueItem = {
   entityResolution: MatchResult;
   entityResolutionDecision: EntityResolutionDecision;
   researchCompleteness: { score: number; presentFields: string[]; missingFields: string[] };
-  publicationReadiness: { ready: boolean; blockingReasons: string[]; unresolvedRequirements: string[] };
+  /** See `PublicationReadinessAssessment` in src/publication-readiness.ts for the real, structured shape. */
+  publicationReadiness: { state: "blocked" | "provisionally_ready" | "confirmed_ready" };
   reviewPriority: number;
 };

@@ -359,6 +359,48 @@ only the `siteType` column changes.
    quirks inside the adapter; the ingestion engine has no idea which columns belong to which source.
 4. Register it in `src/sources/registry.ts`.
 
+## Enrichment seam (research/provider orchestration)
+
+`src/enrichment/` adds the seam through which a future website, geocoding, SIC-classification, company-size, or
+contact-research provider will operate — proposing evidence-backed field values for a `LocationCandidate`, never
+deciding entity resolution or publication outcomes. **No live provider exists yet.** The only implementation in this
+commit is `src/enrichment/test-provider.ts`, a deterministic fake used exclusively by tests; there are no external
+API calls, no API keys, and no environment variables anywhere in this module.
+
+- **`EnrichmentField`** (`src/enrichment/types.ts`) is the closed list of publication fields a provider may research
+  (canonical name, website, physical/mailing address, local phone, market, county, site type, site/company-wide
+  employee size, start year, SIC, parent/HQ relationship, contact name/email, alphasort). It reuses `FieldPath`'s
+  existing "scope.field" naming rather than inventing a second field taxonomy — `enrichmentFieldToPath()` is the only
+  translation point. Fields with no valid representation yet (building type, revenue, total sites, a distinct
+  "domain" concept, creating a brand-new contact) are deliberately omitted, not forced in — see the comment at the
+  top of that file for the full list.
+- **`EnrichmentProvider`** (`canRun` / `enrich`) is the interface a future provider implements. A provider call
+  either `completed`s (with one outcome per requested field: `success`, `not_found`, `conflict`, or `skipped`) or
+  `failed` outright with a sanitized error category/message — never a raw exception or secret payload.
+- **A successful proposal is always a real `FieldEvidence<T>`**, built with the existing `createFieldEvidence()` —
+  this seam does not add a second confidence scale, a second provenance model, or an untyped JSON evidence blob.
+- **`planEnrichmentFields()`** decides which fields are worth researching (confirmed blockers first, then unresolved
+  rules, then opportunistic gaps in already-populated data) given the available providers and an execution policy;
+  it never treats every optional field as mandatory.
+- **`runEnrichment()`** (`src/enrichment/orchestrator.ts`) evaluates readiness, plans fields, runs each eligible
+  provider *independently* (a `for` loop with per-provider `try/catch`, not an uncontrolled `Promise.all` that could
+  lose every result if one provider rejects), merges safe proposals, and recomputes publication readiness on the
+  result. Merge rules are deterministic: an empty field accepts a supported proposal; an identical value adds
+  corroborating evidence; a different value produces a conflict instead of overwriting; a human-confirmed value is
+  never overwritten automatically; and rerunning the same provider/value never duplicates evidence.
+- **Persistence is deliberately deferred.** `runEnrichment()` returns an enriched, in-memory candidate plus the full
+  run result (planned fields, provider results, conflicts, before/after readiness) rather than writing a new
+  enrichment-run table. The existing `insertLocationCandidate()` (`src/db.ts`) can already persist the returned
+  candidate unchanged; a dedicated run-history schema is left for a later commit once it's clear what needs to be
+  queried, not built speculatively now.
+- **External providers stay disabled** until Business Wise's data-boundary policy (which external services may see
+  candidate data, and under what handling rules) is confirmed — this commit only builds the seam they will plug
+  into.
+
+See `src/enrichment/*.test.ts` for the full behavioral contract (missing-field fill, readiness recalculation,
+independent provider failure, `not_found` vs. `failed`, conflict preservation, evidence dedup on rerun, and
+human-confirmed protection).
+
 ## Run locally
 
 Requires Bun.

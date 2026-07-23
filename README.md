@@ -9,7 +9,9 @@ A safe, local vertical slice for the proposed DFW automated new-company intake p
 > implements, which is intentionally a subset of it. See `docs/COMPANY_LOCATION_MODEL.md`'s "Known gaps vs.
 > BWI_DOMAIN_RULES.md" section for the specific, tracked differences. See
 > [`docs/BWI_PRODUCTION_DB_DISCOVERY.md`](docs/BWI_PRODUCTION_DB_DISCOVERY.md) for the July 2026 production-database
-> discovery record informing the write boundaries described below.
+> discovery record informing the write boundaries described below, and
+> [`docs/BWI_READ_ONLY_IMPORT.md`](docs/BWI_READ_ONLY_IMPORT.md) for the Task 7 read-only import path from BWI's
+> canonical directory into this sandbox.
 
 ## What this proves first
 
@@ -359,6 +361,30 @@ only the `siteType` column changes.
    quirks inside the adapter; the ingestion engine has no idea which columns belong to which source.
 4. Register it in `src/sources/registry.ts`.
 
+## BWI read-only import (real comparison data)
+
+Everything above is about *incoming candidates* (`LocationCandidate`) — new-company discovery from DFW sources.
+Task 7 adds the other half: importing BWI's own **existing** company-location records (`ExistingCompany`) so entity
+resolution has real comparison data to match candidates against, instead of only `seed.ts`'s three synthetic
+fixtures.
+
+```bash
+bun run bwi:import -- --file=data/sources/bwi-snapshot-sample.csv   # local CSV snapshot import
+bun run bwi:search -- --name="Acme"                                  # search the locally-imported records
+bun run bwi:smoke -- --live --limit=10                               # manual-only: read 10 rows from a real BWI DB
+```
+
+Imported records land in the same `existing_companies` table (and the same `ExistingCompany` type) `seed.ts` already
+populates and `run.ts` already reads for matching — so importing more real records requires **zero changes** to
+`entity-resolution.ts`/`entity-resolution-policy.ts`/`run.ts`. Two adapters (a local CSV snapshot and a direct,
+structurally read-only SQL Server adapter over BWI's canonical `DirCompany`/`DirCompanyDirectory` tables) share one
+normalization path, so they can never drift into two different domain models. The live adapter is never invoked by
+`bun test` or `bun run reset` — only by the explicit, manually-run `bun run bwi:smoke -- --live` command, gated on
+local `BWI_DB_*` environment variables (see `.env.example`) that are never committed.
+
+Full detail — snapshot schema, credential handling, read-only enforcement, upsert/persistence semantics, and the
+column-name caveat for the live adapter — lives in **[`docs/BWI_READ_ONLY_IMPORT.md`](docs/BWI_READ_ONLY_IMPORT.md)**.
+
 ## Run locally
 
 Requires Bun.
@@ -435,6 +461,7 @@ code-focused follow-ups building on that:
 9. Build a simple review UI only after the candidate schema and review decisions stabilize — a natural place to surface `EntityResolutionDecision.reasons`/`conflicts`/`alternativeMatches` for a reviewer.
 10. Implement the production `BusinessWiseAdapter` after Rif/Randall confirm architecture and write boundaries.
 11. Once BWI's real employee-size/revenue band code dictionary is captured (`docs/BWI_DOMAIN_RULES.md` §11, unresolved), add `normalizeBwiEmployeeBand`/`normalizeBwiRevenueBand` to `src/bwi-codes.ts` — deliberately not invented in this task.
+12. ~~Build a real, read-only import path from BWI's canonical directory so entity resolution has a real comparison universe (`docs/OPTION_A_DISCOVERY_DESIGN.md` §23.12's hard gate) instead of only synthetic `seed.ts` fixtures.~~ **Done (Task 7)** — see "BWI read-only import" above and `docs/BWI_READ_ONLY_IMPORT.md`. Still open: confirming the exact `DirCompany`/`DirCompanyDirectory` column names in `src/sources/bwi/live-adapter.ts`'s `SCHEMA` constant (needs confirmation from Jushen — not verified against the real schema) and the canonical-import confidence calibration (`BWI_CANONICAL_IMPORT_CONFIDENCE`, also needs confirmation from Jushen).
 
 ## Non-goals for this starter
 

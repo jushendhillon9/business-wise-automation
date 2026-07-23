@@ -265,6 +265,10 @@ export type FieldEvidenceSourceType =
   | "research_on_demand_request"
   | "existing_bwi_record"
   | "human_research_decision"
+  /** A field value read from a Task 7 local BWI snapshot export (CSV/JSON), not a live database connection. */
+  | "bwi_canonical_snapshot_import"
+  /** A field value read directly from the canonical BWI directory layer (DirCompany/DirCompanyDirectory) via the Task 7 read-only live adapter. */
+  | "bwi_canonical_live_import"
   | "other";
 
 /**
@@ -447,7 +451,20 @@ export function hasFieldEvidence(candidate: LocationCandidate, path: FieldPath):
  * `research_deleted` semantic value without erasing which raw spelling was
  * actually stored.
  */
-export type ExistingCompanyStatus = "DIRE" | "DEL" | "RDEL" | "RDL" | "research";
+export type ExistingCompanyStatus =
+  | "DIRE"
+  | "DEL"
+  | "RDEL"
+  | "RDL"
+  | "research"
+  // Widened (not a plain closed union) starting Task 7: a real/snapshot BWI
+  // import may surface a raw status code beyond these five documented
+  // values. Preserving it verbatim (never coercing an unrecognized code
+  // into one of the five, and never dropping it) matters more than a fully
+  // closed type here — see normalizeBwiLifecycleStatus() in src/bwi-codes.ts
+  // for how an unrecognized raw value still normalizes safely to "unknown"
+  // on `lifecycleStatus` without losing the original string on `status`.
+  | (string & {});
 
 /**
  * A known Business Wise location record to match candidates against. Kept
@@ -456,12 +473,18 @@ export type ExistingCompanyStatus = "DIRE" | "DEL" | "RDEL" | "RDL" | "research"
  * model for existing records is out of scope for this project. (Not
  * renamed to `ExistingLocation` in this task — see the naming note in
  * docs/COMPANY_LOCATION_MODEL.md.) `id` is what `MatchResult.existingCompanyId`
- * and `EntityResolutionDecision.matchedExistingCompanyId` refer to.
+ * and `EntityResolutionDecision.matchedExistingCompanyId` refer to. Since
+ * Task 7, `id` is also the stable BWI identifier when this record came from
+ * a real BWI import (live or snapshot) — see docs/BWI_READ_ONLY_IMPORT.md.
  */
 export type ExistingCompany = {
   id: string;
   companyName: string;
+  /** Search/sort name, when the source provides one. Mirrors CompanyIdentity.alphasort. */
+  alphasort?: string;
   address?: string;
+  /** Mailing address, when it differs from `address` and the source provides one. Kept as a flat string, matching `address`'s shape rather than LocationCandidate's structured `Address` — see the naming note above for why this type stays flat. */
+  mailingAddress?: string;
   city?: string;
   state?: string;
   postalCode?: string;
@@ -472,7 +495,42 @@ export type ExistingCompany = {
   status?: ExistingCompanyStatus;
   /** Normalized semantic lifecycle derived from `status` — see src/bwi-codes.ts. Always recomputed from `status` on insert (src/db.ts), so the two never drift apart. */
   lifecycleStatus?: BwiLifecycleStatus;
+  /** Normalized BWI site type for this existing location, when the source provides one. Informational only — scoreCandidateAgainstExisting() (src/entity-resolution.ts) does not compare this field; adding it here must never change Task 4 scoring. */
+  siteType?: SiteType;
+  /** Exact raw site-type code as given by the source, preserved verbatim — see src/bwi-codes.ts. */
+  rawSiteTypeCode?: string;
+  /** Parent/affiliate relationship, when the source provides one. Informational only, same non-scoring caveat as `siteType`. */
+  relationship?: Relationship;
+  /** BW metro market, e.g. "DFW". */
+  market?: string;
+  county?: string;
+  employeeSizeSite?: EmployeeSizeValue;
+  employeeSizeCompanyWide?: EmployeeSizeValue;
+  /**
+   * Last-updated/audit timestamp from the source system, when known — never
+   * fabricated. Needs confirmation from Jushen: the exact production
+   * audit-date column(s) and semantics (DirEntity's audit metadata is
+   * confirmed to exist at the table level per
+   * docs/BWI_PRODUCTION_DB_DISCOVERY.md §3.1, but individual column meaning
+   * is not independently confirmed there).
+   */
+  lastUpdatedAt?: string;
+  /** Where this existing-record snapshot came from (a Task 7 BWI live/snapshot import). Absent for records that predate Task 7 (e.g. seed.ts fixtures) or were entered another way. */
+  source?: SourceProvenance;
+  /** Field-level evidence for this record's individual fields, when imported with evidence attached — see docs/BWI_READ_ONLY_IMPORT.md. Optional for the same backward-compatibility reason as `LocationCandidate.fieldEvidence`. */
+  fieldEvidence?: FieldEvidenceCollection;
 };
+
+/**
+ * Alias naming `ExistingCompany` by its Task 7 role: the canonical
+ * existing-BWI-location record entity resolution compares incoming
+ * candidates against. Not a separate type or a second domain model —
+ * `ExistingCompany` already *is* this concept (see the naming note above);
+ * this alias just gives Task 7 code and docs a name that matches
+ * docs/BWI_PRODUCTION_DB_DISCOVERY.md's vocabulary without triggering a
+ * repo-wide rename (deferred — see the naming note).
+ */
+export type ExistingBwiLocation = ExistingCompany;
 
 export type MatchClassification =
   | "likely_duplicate"

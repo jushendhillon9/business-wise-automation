@@ -1,0 +1,8 @@
+bwi_location_id,company_name,alphasort,address,mailing_address,city,state,postal_code,phone,website,sic_code,site_type_code,status_code,market,county,parent_company,affiliate,employee_size_site,employee_size_site_raw_code,employee_size_company_wide,employee_size_company_wide_raw_code,last_updated_at
+bwi-10001,Acme Logistics LLC,ACME LOGISTICS LLC,1200 Commerce Street,,Dallas,TX,75201,214-555-0100,https://acmelogistics.example,4213,H,DIRE,DFW,Dallas,,,180,,180,,2026-05-01T00:00:00.000Z
+bwi-10002,Acme Logistics LLC - Fort Worth Branch,ACME LOGISTICS LLC - FORT WORTH BRANCH,4400 Trade Center Blvd,,Fort Worth,TX,76102,817-555-0177,https://acmelogistics.example,4213,B,DIRE,DFW,Tarrant,Acme Logistics LLC,,22,,,,2026-05-01T00:00:00.000Z
+bwi-10003,Northstar Advisory Group Inc.,NORTHSTAR ADVISORY GROUP INC,500 Main Street Suite 900,,Fort Worth,TX,76102,817-555-0144,https://northstaradvisory.example,8742,H,DIRE,DFW,Tarrant,,,35,,35,,2026-03-15T00:00:00.000Z
+bwi-10004,Blue Mesa Technologies,BLUE MESA TECHNOLOGIES,8000 Legacy Drive,,Plano,TX,75024,972-555-0188,https://bluemesa.example,7372,S,research,DFW,Collin,,,60,,60,,2026-06-10T00:00:00.000Z
+bwi-10005,Ghost Retail Holdings,GHOST RETAIL HOLDINGS,900 Vacant Plaza,,Irving,TX,75039,972-555-0199,,5311,S,RDL,DFW,Dallas,,,,,,,2025-01-20T00:00:00.000Z
+bwi-10006,Legacy Print Shop,LEGACY PRINT SHOP,300 Old Mill Rd,,Garland,TX,75040,,,2752,X,Z,DFW,Dallas,,,,,,,2024-11-05T00:00:00.000Z
+bwi-10007,Minimal Data Co,,,,,,,,,,,,,,,,,,,,

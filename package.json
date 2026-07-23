@@ -8,10 +8,17 @@
     "ingest": "bun run src/ingest.ts",
     "run": "bun run src/run.ts",
     "queue": "bun run src/queue.ts",
+    "bwi:import": "bun run src/bwi-import-cli.ts",
+    "bwi:search": "bun run src/bwi-search-cli.ts",
+    "bwi:smoke": "bun run src/bwi-smoke-cli.ts",
     "test": "bun test",
     "reset": "rm -f data/sandbox.sqlite && bun run init && bun run seed && bun run ingest --source=dfw-json && bun run ingest --source=dfw-csv && bun run run"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@types/mssql": "^12.3.0"
+  },
+  "dependencies": {
+    "mssql": "^12.7.0"
   }
 }

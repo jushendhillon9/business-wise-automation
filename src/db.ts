@@ -18,10 +18,25 @@ export function createSchema(db: Database): void {
     -- normalized away. lifecycle_status is the normalized counterpart,
     -- always recomputed from status via normalizeBwiLifecycleStatus() on
     -- insert (src/bwi-codes.ts) so the two can never drift apart.
+    --
+    -- Since Task 7 (docs/BWI_READ_ONLY_IMPORT.md), this table is also where
+    -- imported BWI existing-location records land -- the same table
+    -- seed.ts's synthetic fixtures use, and the same table run.ts already
+    -- reads via loadExistingCompanies() for entity resolution. Reusing this
+    -- table (rather than a second, competing "existing BWI record" table)
+    -- means Task 7 required zero changes to run.ts/entity-resolution.ts:
+    -- more imported rows here are automatically compared against on the
+    -- next "bun run run". raw_json is a full point-in-time snapshot of the
+    -- ExistingCompany object (mirroring location_candidates' raw_json
+    -- pattern) so the newer optional fields below round-trip losslessly
+    -- without a dedicated column each; a handful of the most query-useful
+    -- new fields also get their own column.
     CREATE TABLE IF NOT EXISTS existing_companies (
       id TEXT PRIMARY KEY,
       company_name TEXT NOT NULL,
+      alphasort TEXT,
       address TEXT,
+      mailing_address TEXT,
       city TEXT,
       state TEXT,
       postal_code TEXT,
@@ -29,7 +44,44 @@ export function createSchema(db: Database): void {
       website TEXT,
       sic_code TEXT,
       status TEXT,
-      lifecycle_status TEXT
+      lifecycle_status TEXT,
+      site_type TEXT,
+      raw_site_type_code TEXT,
+      relationship_json TEXT,
+      market TEXT,
+      county TEXT,
+      employee_size_site_json TEXT,
+      employee_size_company_wide_json TEXT,
+      last_updated_at TEXT,
+      import_source_id TEXT,
+      import_source_name TEXT,
+      field_evidence_json TEXT NOT NULL DEFAULT '[]',
+      raw_json TEXT
+    );
+
+    -- One row per BWI import run (snapshot or live), mirroring source_runs'
+    -- shape for the DFW ingestion pipeline. Never deletes existing_companies
+    -- rows itself -- a bounded snapshot/page that omits a previously-imported
+    -- id is not evidence that record was deleted from BWI, so this table
+    -- only ever records what a given run read/accepted/rejected/wrote, never
+    -- a removal.
+    CREATE TABLE IF NOT EXISTS bwi_import_runs (
+      id TEXT PRIMARY KEY,
+      source_type TEXT NOT NULL,
+      source_name TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      status TEXT NOT NULL DEFAULT 'running',
+      rows_read INTEGER NOT NULL DEFAULT 0,
+      rows_accepted INTEGER NOT NULL DEFAULT 0,
+      rows_rejected INTEGER NOT NULL DEFAULT 0,
+      rows_inserted INTEGER NOT NULL DEFAULT 0,
+      rows_updated INTEGER NOT NULL DEFAULT 0,
+      rows_unchanged INTEGER NOT NULL DEFAULT 0,
+      unknown_site_type_codes_json TEXT NOT NULL DEFAULT '[]',
+      unknown_lifecycle_codes_json TEXT NOT NULL DEFAULT '[]',
+      validation_errors_json TEXT NOT NULL DEFAULT '[]',
+      error_message TEXT
     );
 
     -- Company-level identity: facts that should be true across every
@@ -200,17 +252,32 @@ export function createSchema(db: Database): void {
   `);
 }
 
+/**
+ * Inserts or fully replaces one existing-BWI-location row, keyed by `id`
+ * (the stable BWI identifier once this record came from a real import — see
+ * docs/BWI_READ_ONLY_IMPORT.md). `lifecycle_status` is always recomputed
+ * from `status` here, never passed through independently, so the two can
+ * never drift apart. Used both by seed.ts's synthetic fixtures (unchanged
+ * call shape since before Task 7) and by the Task 7 BWI import path via
+ * `upsertBwiExistingLocation()` (src/bwi-import.ts), which wraps this with
+ * inserted/updated/unchanged accounting.
+ */
 export function insertExistingCompany(db: Database, company: ExistingCompany): void {
   const lifecycleStatus = normalizeBwiLifecycleStatus(company.status).normalized;
 
   db.query(`
     INSERT OR REPLACE INTO existing_companies
-      (id, company_name, address, city, state, postal_code, phone, website, sic_code, status, lifecycle_status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (id, company_name, alphasort, address, mailing_address, city, state, postal_code, phone, website, sic_code,
+       status, lifecycle_status, site_type, raw_site_type_code, relationship_json, market, county,
+       employee_size_site_json, employee_size_company_wide_json, last_updated_at,
+       import_source_id, import_source_name, field_evidence_json, raw_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     company.id,
     company.companyName,
+    company.alphasort ?? null,
     company.address ?? null,
+    company.mailingAddress ?? null,
     company.city ?? null,
     company.state ?? null,
     company.postalCode ?? null,
@@ -218,8 +285,55 @@ export function insertExistingCompany(db: Database, company: ExistingCompany): v
     company.website ?? null,
     company.sicCode ?? null,
     company.status ?? null,
-    lifecycleStatus
+    lifecycleStatus,
+    company.siteType ?? null,
+    company.rawSiteTypeCode ?? null,
+    company.relationship ? JSON.stringify(company.relationship) : null,
+    company.market ?? null,
+    company.county ?? null,
+    company.employeeSizeSite ? JSON.stringify(company.employeeSizeSite) : null,
+    company.employeeSizeCompanyWide ? JSON.stringify(company.employeeSizeCompanyWide) : null,
+    company.lastUpdatedAt ?? null,
+    company.source?.sourceId ?? null,
+    company.source?.sourceName ?? null,
+    JSON.stringify(company.fieldEvidence ?? []),
+    // lifecycleStatus is derived, not necessarily set on the caller's
+    // object (see e.g. seed.ts, which only sets `status`) -- fold it in so
+    // raw_json round-trips the same derived value the dedicated column has,
+    // never a stale/absent one.
+    JSON.stringify({ ...company, lifecycleStatus })
   );
+}
+
+function rowToExistingCompany(row: Record<string, unknown>): ExistingCompany {
+  if (row.raw_json) {
+    // raw_json is the full point-in-time snapshot -- source of truth
+    // whenever present, same pattern as loadLocationCandidates().
+    return JSON.parse(String(row.raw_json)) as ExistingCompany;
+  }
+
+  // Legacy row (inserted before Task 7's raw_json column existed): fall
+  // back to reconstructing from the individual columns that already
+  // existed. Only the pre-Task-7 field set is recoverable this way.
+  return {
+    id: String(row.id),
+    companyName: String(row.company_name),
+    address: row.address ? String(row.address) : undefined,
+    city: row.city ? String(row.city) : undefined,
+    state: row.state ? String(row.state) : undefined,
+    postalCode: row.postal_code ? String(row.postal_code) : undefined,
+    phone: row.phone ? String(row.phone) : undefined,
+    website: row.website ? String(row.website) : undefined,
+    sicCode: row.sic_code ? String(row.sic_code) : undefined,
+    status: row.status ? String(row.status) : undefined,
+    lifecycleStatus: row.lifecycle_status as ExistingCompany["lifecycleStatus"]
+  };
+}
+
+/** Reads back one existing-BWI-location row by its stable id, or undefined if not yet imported/seeded. Used by the Task 7 import path to decide inserted/updated/unchanged without depending on INSERT OR REPLACE's own return value (SQLite doesn't report that distinction). */
+export function getExistingCompanyById(db: Database, id: string): ExistingCompany | undefined {
+  const row = db.query(`SELECT * FROM existing_companies WHERE id = ?`).get(id) as Record<string, unknown> | null;
+  return row ? rowToExistingCompany(row) : undefined;
 }
 
 export function insertCompanyIdentity(db: Database, identity: CompanyIdentity): void {
@@ -313,25 +427,17 @@ export function loadLocationCandidatesByCompanyId(db: Database, companyIdentityI
   return rows.map((row) => JSON.parse(row.raw_json) as LocationCandidate);
 }
 
+/**
+ * Loads every existing-BWI-location row — seeded synthetic fixtures and
+ * Task 7 BWI imports alike, indistinguishable to the entity-resolution
+ * pipeline that reads this (run.ts). Prefers each row's `raw_json` snapshot
+ * (present for anything inserted since Task 7); falls back to column
+ * reconstruction for a genuinely legacy row with no `raw_json` — see
+ * `rowToExistingCompany()`.
+ */
 export function loadExistingCompanies(db: Database): ExistingCompany[] {
-  const rows = db.query(`
-    SELECT id, company_name, address, city, state, postal_code, phone, website, sic_code, status, lifecycle_status
-    FROM existing_companies
-  `).all() as Array<Record<string, unknown>>;
-
-  return rows.map((row) => ({
-    id: String(row.id),
-    companyName: String(row.company_name),
-    address: row.address ? String(row.address) : undefined,
-    city: row.city ? String(row.city) : undefined,
-    state: row.state ? String(row.state) : undefined,
-    postalCode: row.postal_code ? String(row.postal_code) : undefined,
-    phone: row.phone ? String(row.phone) : undefined,
-    website: row.website ? String(row.website) : undefined,
-    sicCode: row.sic_code ? String(row.sic_code) : undefined,
-    status: row.status as ExistingCompany["status"],
-    lifecycleStatus: row.lifecycle_status as ExistingCompany["lifecycleStatus"]
-  }));
+  const rows = db.query(`SELECT * FROM existing_companies`).all() as Array<Record<string, unknown>>;
+  return rows.map(rowToExistingCompany);
 }
 
 export function upsertReviewQueue(
@@ -562,4 +668,95 @@ export function insertSourceRecord(
     record.firstRunId,
     record.firstIngestedAt
   );
+}
+
+/**
+ * One BWI import run's summary — mirrors `SourceRun` above for the Task 7
+ * BWI import path (`src/bwi-import.ts`). `rowsInserted`/`rowsUpdated`/
+ * `rowsUnchanged` always sum to `rowsAccepted`; `rowsAccepted +
+ * rowsRejected` always sums to `rowsRead`.
+ */
+export type BwiImportRun = {
+  id: string;
+  sourceType: "bwi_snapshot" | "bwi_live";
+  sourceName: string;
+  startedAt: string;
+  finishedAt?: string;
+  status: "running" | "success" | "failed";
+  rowsRead: number;
+  rowsAccepted: number;
+  rowsRejected: number;
+  rowsInserted: number;
+  rowsUpdated: number;
+  rowsUnchanged: number;
+  unknownSiteTypeCodes: string[];
+  unknownLifecycleCodes: string[];
+  validationErrors: string[];
+  errorMessage?: string;
+};
+
+export function startBwiImportRun(db: Database, run: Pick<BwiImportRun, "id" | "sourceType" | "sourceName" | "startedAt">): void {
+  db.query(`
+    INSERT INTO bwi_import_runs (id, source_type, source_name, started_at, status)
+    VALUES (?, ?, ?, ?, 'running')
+  `).run(run.id, run.sourceType, run.sourceName, run.startedAt);
+}
+
+export function finishBwiImportRun(
+  db: Database,
+  runId: string,
+  result: Omit<BwiImportRun, "id" | "sourceType" | "sourceName" | "startedAt" | "status"> & { status: "success" | "failed" }
+): void {
+  db.query(`
+    UPDATE bwi_import_runs SET
+      finished_at = ?,
+      status = ?,
+      rows_read = ?,
+      rows_accepted = ?,
+      rows_rejected = ?,
+      rows_inserted = ?,
+      rows_updated = ?,
+      rows_unchanged = ?,
+      unknown_site_type_codes_json = ?,
+      unknown_lifecycle_codes_json = ?,
+      validation_errors_json = ?,
+      error_message = ?
+    WHERE id = ?
+  `).run(
+    result.finishedAt ?? null,
+    result.status,
+    result.rowsRead,
+    result.rowsAccepted,
+    result.rowsRejected,
+    result.rowsInserted,
+    result.rowsUpdated,
+    result.rowsUnchanged,
+    JSON.stringify(result.unknownSiteTypeCodes),
+    JSON.stringify(result.unknownLifecycleCodes),
+    JSON.stringify(result.validationErrors),
+    result.errorMessage ?? null,
+    runId
+  );
+}
+
+export function loadBwiImportRuns(db: Database): BwiImportRun[] {
+  const rows = db.query(`SELECT * FROM bwi_import_runs ORDER BY started_at DESC`).all() as Array<Record<string, unknown>>;
+  return rows.map((row) => ({
+    id: String(row.id),
+    sourceType: row.source_type as BwiImportRun["sourceType"],
+    sourceName: String(row.source_name),
+    startedAt: String(row.started_at),
+    finishedAt: row.finished_at ? String(row.finished_at) : undefined,
+    status: row.status as BwiImportRun["status"],
+    rowsRead: Number(row.rows_read),
+    rowsAccepted: Number(row.rows_accepted),
+    rowsRejected: Number(row.rows_rejected),
+    rowsInserted: Number(row.rows_inserted),
+    rowsUpdated: Number(row.rows_updated),
+    rowsUnchanged: Number(row.rows_unchanged),
+    unknownSiteTypeCodes: JSON.parse(String(row.unknown_site_type_codes_json)),
+    unknownLifecycleCodes: JSON.parse(String(row.unknown_lifecycle_codes_json)),
+    validationErrors: JSON.parse(String(row.validation_errors_json)),
+    errorMessage: row.error_message ? String(row.error_message) : undefined
+  }));
 }

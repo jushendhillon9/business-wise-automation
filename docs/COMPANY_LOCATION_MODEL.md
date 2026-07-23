@@ -118,6 +118,15 @@ address/city/state/phone, not a company-wide identity), so it is conceptually wh
 avoid unnecessary churn to `entity-resolution.ts`, `db.ts`, and their tests. A rename to `ExistingLocation` is a
 reasonable candidate for a future, code-focused task.
 
+**Task 7 update:** rather than rename `ExistingCompany` or introduce a second, competing "existing BWI record" type,
+Task 7 (`docs/BWI_READ_ONLY_IMPORT.md`) added `ExistingBwiLocation` as a documented type alias for `ExistingCompany`
+and extended `ExistingCompany` itself with the optional fields a real BWI import needs (`alphasort`,
+`mailingAddress`, `siteType`/`rawSiteTypeCode`, `relationship`, `market`/`county`, `employeeSizeSite`/
+`employeeSizeCompanyWide`, `lastUpdatedAt`, `source`, `fieldEvidence`). All new fields are optional, so no existing
+fixture, test, or the type's structural shape for pre-Task-7 callers changed. Imported BWI records land in the same
+`existing_companies` table `seed.ts` already populates — see that document for why this required zero changes to
+`entity-resolution.ts`/`entity-resolution-policy.ts`/`run.ts`.
+
 ## Why ingestion does not merge company identities
 
 ```

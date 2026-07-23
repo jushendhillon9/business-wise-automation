@@ -3,3 +3,19 @@ data/sandbox.sqlite
 data/sandbox.sqlite-*
 data/ingestion.test.sqlite
 data/ingestion.test.sqlite-*
+data/db.test.sqlite
+data/db.test.sqlite-*
+data/bwi-import.test.sqlite
+data/bwi-import.test.sqlite-*
+data/bwi-snapshot-adapter.test.csv
+
+# Local environment variables (BWI live-database credentials, etc.) -- never commit.
+.env
+.env.local
+.env.*.local
+
+# Real BWI exports/snapshots belong only here, never committed -- see
+# docs/BWI_READ_ONLY_IMPORT.md. Everything in this directory is ignored
+# except the README explaining what it's for.
+data/private/*
+!data/private/README.md

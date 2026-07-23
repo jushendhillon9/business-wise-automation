@@ -29,9 +29,63 @@ describe("dfw csv adapter", () => {
     expect(result.candidate.physicalAddress?.city).toBe("Carrollton");
     expect(result.candidate.employeeSizeSite?.estimate).toBe(34);
     expect(result.candidate.market).toBe("DFW");
-    expect(result.candidate.contacts).toEqual([
-      { name: "Dana Whitfield", email: "dana.whitfield@ridgelineprecision.example", phone: undefined }
-    ]);
+    expect(result.candidate.contacts.length).toBe(1);
+    expect(result.candidate.contacts[0]).toMatchObject({
+      name: "Dana Whitfield",
+      email: "dana.whitfield@ridgelineprecision.example",
+      phone: undefined
+    });
+    expect(result.candidate.contacts[0]?.id).toBeTruthy();
+  });
+
+  test("attaches field-level evidence for values genuinely present on the source row", () => {
+    const adapter = createDfwCsvAdapter();
+    const result = adapter.toCandidate({
+      recordId: "DCL-88231",
+      data: {
+        license_id: "DCL-88231",
+        business_name: "Ridgeline Precision Machining",
+        website: "ridgelineprecision.example",
+        city: "Carrollton",
+        state: "TX",
+        phone: "972-555-0161",
+        contact_name: "Dana Whitfield",
+        contact_email: "dana.whitfield@ridgelineprecision.example"
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const fieldEvidence = result.candidate.fieldEvidence ?? [];
+    expect(fieldEvidence.length).toBeGreaterThan(0);
+    for (const item of fieldEvidence) {
+      expect(item.confidence).toBeGreaterThanOrEqual(0);
+      expect(item.confidence).toBeLessThanOrEqual(1);
+      expect(item.source.sourceType).toBe("county_business_license");
+      expect(item.source.sourceId).toBe("dfw-csv");
+    }
+
+    const companyNameEvidence = fieldEvidence.find((e) => e.path.scope === "company" && e.path.field === "legalName");
+    expect(companyNameEvidence?.value).toBe("Ridgeline Precision Machining");
+
+    const contactId = result.candidate.contacts[0]?.id;
+    const contactEmailEvidence = fieldEvidence.find((e) => e.path.scope === "contact" && e.path.contactId === contactId && e.path.field === "email");
+    expect(contactEmailEvidence?.value).toBe("dana.whitfield@ridgelineprecision.example");
+  });
+
+  test("does not fabricate evidence for fields absent from the source row", () => {
+    const adapter = createDfwCsvAdapter();
+    const result = adapter.toCandidate({
+      recordId: "DCL-88240",
+      data: { license_id: "DCL-88240", business_name: "Sparse Co" }
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const fields = (result.candidate.fieldEvidence ?? []).map((e) => e.path.field);
+    expect(fields).toEqual(["legalName"]);
   });
 
   test("rejects a row with no business name", () => {

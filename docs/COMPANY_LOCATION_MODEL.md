@@ -54,7 +54,7 @@ LocationCandidate {
   estimatedAnnualRevenue,
   contacts, description,
   source: SourceProvenance, capturedAt,
-  evidence, rawSourceData
+  evidence, fieldEvidence: FieldEvidence[], rawSourceData
 }
 ```
 
@@ -305,8 +305,17 @@ unresolved per §8.5.
   lifecycle/research status, and the recommended `contact_coverage_score` depth metric.
 - **Audit/verification (§5):** BW ID, base date, changed/entered/researched-by, research date, phone-validated date,
   follow-up date, and the researcher-identity/verification-state fields entirely.
-- **Field-level evidence (§15):** the `FieldEvidence<T>` shape (value/confidence/sourceUrl/sourceType/capturedAt) is
-  not implemented — `LocationCandidate.evidence` today is a flat `string[]`, not per-field evidence records.
+- ~~**Field-level evidence (§15):** the `FieldEvidence<T>` shape (value/confidence/sourceUrl/sourceType/capturedAt) is
+  not implemented — `LocationCandidate.evidence` today is a flat `string[]`, not per-field evidence records.~~
+  **Implemented (Task 6):** `FieldEvidence<T>` (`src/types.ts`) now exists, keyed to a `FieldPath` (company/location
+  field name, or contact field + stable `Contact.id`), with `confidence` (validated 0–1), a `source:
+  FieldEvidenceSource` that reuses `SourceProvenance`'s field names, and optional `capturedAt`/`evidenceText`/
+  `derivation`/`inheritance`. `LocationCandidate.evidence` (the free-text list) is unchanged and still exists
+  alongside it — field-level evidence is additive, not a replacement. See the README's "Field-level evidence and
+  confidence" section for the full model, confidence-scale caveat, persistence, and how a reviewer inspects it via
+  `bun run queue`. Not implemented as part of Task 6: any inheritance-*proposal* logic (the `inheritance` field only
+  describes the shape a proposed-inheritance record would take — see below) and any confidence-scale calibration
+  against real outcomes (flagged "Needs confirmation from Jushen" in the README).
 
 ### Richer state modeling described but not yet implemented
 
@@ -354,4 +363,8 @@ Also unimplemented from §12.5 (Field inheritance): when a new branch/HQ is link
 company-level fields (website, email format, SIC, start year, parent/HQ relationship) could be proposed for
 inheritance from the existing record. `EntityResolutionDecision` surfaces `matchedExistingCompanyId` /
 `relatedExistingCompanyIds` for `new_branch_of_existing_company` and `new_headquarters_of_existing_company`, which is
-enough context for a future task to build that proposal — but no inheritance logic exists yet.
+enough context for a future task to build that proposal — but no inheritance logic exists yet. Task 6 added the
+*shape* an inheritance proposal's evidence would take (`FieldEvidence.derivation === "inherited"` +
+`FieldEvidence.inheritance`, `src/types.ts`) so a future task has somewhere to put it, but deliberately does not
+wire any inheritance-proposal logic into `entity-resolution.ts`/`entity-resolution-policy.ts` — those stay
+unchanged, per Task 6's scope.

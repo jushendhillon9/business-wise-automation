@@ -97,6 +97,13 @@ export function createSchema(db: Database): void {
       description TEXT,
       contacts_json TEXT NOT NULL DEFAULT '[]',
       evidence_json TEXT NOT NULL,
+      -- Field-level evidence and confidence (Task 6, docs/BWI_DOMAIN_RULES.md
+      -- §15) -- FieldEvidence[] (src/types.ts), keyed to individual
+      -- company/location/contact fields. Stored as its own column (mirroring
+      -- evidence_json above) even though raw_json already contains it, for
+      -- the same reason the other *_json columns exist. Defaults to '[]' so
+      -- rows inserted before this column existed still load safely.
+      field_evidence_json TEXT NOT NULL DEFAULT '[]',
       raw_source_json TEXT,
       raw_json TEXT NOT NULL,
 
@@ -252,8 +259,8 @@ export function insertLocationCandidate(db: Database, candidate: LocationCandida
        site_type, raw_site_type_code, building_name, building_type, lease_or_own,
        employee_size_site_json, employee_size_company_wide_json, employee_count_exact,
        total_sites, estimated_annual_revenue_json, description, contacts_json,
-       evidence_json, raw_source_json, raw_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       evidence_json, field_evidence_json, raw_source_json, raw_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     candidate.id,
     candidate.company.id,
@@ -288,6 +295,7 @@ export function insertLocationCandidate(db: Database, candidate: LocationCandida
     candidate.description ?? null,
     JSON.stringify(candidate.contacts),
     JSON.stringify(candidate.evidence),
+    JSON.stringify(candidate.fieldEvidence ?? []),
     candidate.rawSourceData !== undefined ? JSON.stringify(candidate.rawSourceData) : null,
     JSON.stringify(candidate)
   );

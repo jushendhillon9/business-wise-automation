@@ -225,6 +225,106 @@ Every location candidate now carries where it came from, in `candidate.source`: 
 says the record was discovered/published) and `rawSourceData` (the original raw record, for audit/debugging) sit on
 the candidate itself.
 
+### Field-level evidence and confidence
+
+Beyond record-level `SourceProvenance`, individual proposed values can carry their own evidence — implementing
+`docs/BWI_DOMAIN_RULES.md` §15's `FieldEvidence<T>` shape. This answers a narrower question than provenance above:
+not just "where did this whole observation come from," but "where did *this specific value* come from, and how
+confident are we in it."
+
+```ts
+type FieldEvidence<T> = {
+  path: FieldPath;                 // { scope: "company" | "location", field } or { scope: "contact", contactId, field }
+  value: T;
+  normalizedValue?: T;
+  rawValue?: unknown;
+  confidence: number;              // 0-1, validated -- see below
+  source: FieldEvidenceSource;     // sourceType, sourceId, sourceName, sourceUrl?, sourceRecordId?, sourceObservationId?
+  capturedAt?: string;             // never fabricated when unknown
+  evidenceText?: string;
+  derivation?: "directly_observed" | "normalized" | "derived" | "inherited" | "human_confirmed";
+  inheritance?: FieldEvidenceInheritance; // present only when derivation === "inherited"
+};
+```
+
+All of this lives in `src/types.ts`, alongside `SourceProvenance` rather than as a second, competing source model:
+`FieldEvidenceSource` reuses `SourceProvenance`'s own field names (`sourceId`/`sourceName`/`sourceUrl`/
+`sourceRecordId`, via `Pick`) plus a `sourceType` category (company website, chamber of commerce, county business
+license, human research decision, existing BWI record, ...) and an optional `sourceObservationId` fallback for
+sources with no natural URL (an authorized BWI export, a human research decision, a local CSV row).
+
+**Field identification.** `FieldPath` is a small discriminated union, not a free-text label — `{ scope: "company",
+field: "website" }`, `{ scope: "location", field: "phone" }`, or `{ scope: "contact", contactId, field: "email" }`.
+Contact evidence is linked via `Contact.id` (a new optional field, assigned by the ingesting adapter), not array
+position, so it survives the contacts array being reordered or grown. `fieldPathKey()` gives a stable string key for
+grouping/lookup; `evidenceForField()` and `hasFieldEvidence()` (`src/types.ts`) read a candidate's evidence without
+each caller re-deriving that key.
+
+**Confidence scale.** 0 (no confidence) through 1 (fully confirmed) — the same 0–1 convention `MatchResult.score` and
+`EntityResolutionDecision.decisionConfidence` already use. `assertValidFieldEvidenceConfidence()` throws a
+`RangeError` for anything outside `[0, 1]` or non-finite; `createFieldEvidence()` (the only way to construct a
+`FieldEvidence`) always calls it, so an invalid confidence can never silently enter a candidate's evidence.
+**Missing evidence is never treated as confidence 1.0** — a field with a value but zero evidence records is
+surfaced explicitly (`missingEvidence: true` in `src/field-evidence-view.ts`), never assumed confirmed.
+**Needs confirmation from Jushen:** the exact confidence values BW reviewers should expect (e.g. what a single
+unverified chamber-feed row vs. a human-confirmed value should read as) are not defined anywhere in the domain docs
+yet. The two DFW fixture adapters use one documented, deliberately conservative placeholder —
+`SINGLE_SOURCE_OBSERVED_CONFIDENCE = 0.6` — for every value they read from a single unverified source record; this
+is a starting point, not a calibrated scale.
+
+**Multiple and conflicting evidence.** `FieldEvidence` records live in a plain array
+(`LocationCandidate.fieldEvidence`), never a map keyed by field — so adding new evidence is always an append
+(`addFieldEvidence()`), and a field legitimately ending up with several agreeing sources, or two sources that
+disagree, is represented directly: nothing in this model ever overwrites or discards earlier evidence for the same
+field. `src/field-evidence-view.ts`'s `summarizeCandidateFieldEvidence()` flags `conflicting: true` when 2+ records
+for one field disagree on `value`.
+
+**Direct vs. normalized vs. derived vs. inherited vs. human-confirmed.** `derivation` names which of these a value
+is; `inheritance` (present only for `derivation: "inherited"`) preserves which existing BWI record or prior
+observation a value was proposed from, why, and whether the new candidate has independent confirming evidence of its
+own (`independentlyConfirmed`) — inherited values are never assumed confirmed just because they were inherited. Only
+the *type* is implemented in Task 6; no inheritance-proposal logic runs anywhere in the pipeline yet (that's
+`docs/COMPANY_LOCATION_MODEL.md` §12.5's still-open "Field inheritance" gap) — entity-resolution/inheritance rules
+are explicitly unchanged by this task.
+
+**Missing-evidence behavior.** Legacy candidates/fixtures predating Task 6 simply have `fieldEvidence: undefined` —
+`evidenceForField()`/`hasFieldEvidence()` treat that exactly like an empty array rather than throwing or requiring a
+migration. A value with no evidence is reported as unverified, never silently treated as confirmed, and never given
+a fabricated source URL, confidence, or capture time.
+
+**Where evidence is attached.** `src/sources/dfw-json-adapter.ts` and `src/sources/dfw-csv-adapter.ts` attach
+`FieldEvidence` only for values the raw source row genuinely supports (never fabricated for absent fields), using
+that source's own `sourceType`/`sourceId`/`sourceName`/`sourceUrl`/`sourceRecordId` — the same source identity
+already on the candidate's `source: SourceProvenance`. `capturedAt` on each evidence record comes from the row's own
+captured/published date when the source gives one, and is left `undefined` otherwise (never `Date.now()`, so
+domain/adapter logic stays deterministic and testable with fixed timestamps).
+
+**Persistence.** `location_candidates.field_evidence_json` (`src/db.ts`) stores `candidate.fieldEvidence` as JSON,
+mirroring how `evidence_json` already stores the free-text `evidence` list — both are also captured in `raw_json`,
+the full point-in-time candidate snapshot `loadLocationCandidates()` reads from. Rows inserted before this column
+existed load safely with `fieldEvidence: undefined` (`DEFAULT '[]'` plus the optional TypeScript field). No
+migration framework is used — this is still the disposable local sandbox; `bun run reset` recreates the schema from
+scratch. Ingestion's existing fingerprint-based dedup means a source item that's already been ingested is skipped
+entirely, so rerunning `bun run ingest` never re-inserts a candidate or duplicates its evidence.
+
+**Reviewer visibility.** `bun run queue` prints its existing scannable summary table unchanged, then a new "Field
+evidence detail" text block (`src/field-evidence-view.ts`) beneath it: for each candidate, one line per field with a
+value, showing confidence, source type(s)/reference(s), and a `[CONFLICTING]` flag when evidence disagrees — or an
+explicit `NO EVIDENCE` marker when a value exists with none recorded. Contacts are shown by name/email with the
+same per-field detail, keyed to their stable `Contact.id`. This is deliberately a readable text report, not a raw
+`FieldEvidence[]` dump — full detail is still available by reading `LocationCandidate.fieldEvidence` directly for
+anything the summary doesn't show.
+
+**What field evidence is not.** Field confidence is a different concept from `EntityResolutionDecision
+.decisionConfidence` (match confidence — is this the same company/location?), `ResearchCompletenessResult.score`
+(how much do we know?), `PublicationReadinessAssessment.state` (does it satisfy BW's required-field rules?), and
+`reviewPriority` (which candidate to look at first). None of the four axes described in "Four separate concepts"
+above reads `fieldEvidence` or `confidence`, and this task did not add a fifth axis or a second readiness engine —
+field evidence exists purely so a reviewer can audit *why* a proposed value looks the way it does. Evidence and
+confidence never authorize production entry or publication — see "Non-goals for this starter" below and
+`docs/BWI_PRODUCTION_DB_DISCOVERY.md` for the write boundary; a `confirmed_ready` assessment (with or without
+evidence attached) still ends in manual entry through the existing authorized BW/Delphi workflow.
+
 ### Sample sources
 
 Two local fixture adapters prove the architecture until a real DFW feed is available:
@@ -327,7 +427,7 @@ code-focused follow-ups building on that:
    `docs/BWI_DOMAIN_RULES.md` §23.1–2), and either collapse `ExistingCompanyStatus` accordingly or pick a canonical
    writeback spelling for `research_deleted` in `src/business-wise-adapter.ts`. (The raw/normalized split itself —
    `status` + `lifecycleStatus` — is already implemented; what's left is the underlying spelling question.)
-4. Add field-level evidence provenance (`FieldEvidence<T>` per `docs/BWI_DOMAIN_RULES.md` §15) so every proposed value can be inspected by Emily/Jen.
+4. ~~Add field-level evidence provenance (`FieldEvidence<T>` per `docs/BWI_DOMAIN_RULES.md` §15) so every proposed value can be inspected by Emily/Jen.~~ **Done (Task 6)** — see "Field-level evidence and confidence" above. Still open: the actual confidence-scale calibration (needs confirmation from Jushen), and wiring real field-level evidence into an inheritance-proposal flow (item 8 below).
 5. Add enrichment adapters for website, LinkedIn/team pages, phone/email validation, and SIC proposal.
 6. Build a **labeled evaluation dataset** (real or realistic candidate/existing-record pairs with a researcher's actual same-location/branch/HQ/name-change/new-company judgment) and use it to measure precision/recall per `EntityResolutionOutcome` and retune the named thresholds in `src/entity-resolution-policy.ts` (`STRONG_COMPANY_NAME_SCORE`, `STRONG_ADDRESS_SCORE`, `AMBIGUOUS_SCORE_MARGIN`, etc.) — those thresholds are reasoned defaults today, not calibrated ones.
 7. Split `possible_changed_location` back into `docs/BWI_DOMAIN_RULES.md` §12.4's separate `possible_same_location_changed_details` / `possible_headquarters_move` outcomes once there's reliable evidence (e.g. confirmed move dates) to distinguish them — see `docs/COMPANY_LOCATION_MODEL.md`'s gaps section for why they're merged today.

@@ -7,7 +7,9 @@ A safe, local vertical slice for the proposed DFW automated new-company intake p
 > evidence-labeled Confirmed/Conditional/Inferred/Unresolved. When this README and that document disagree, the
 > domain-rules document wins; this README (and `docs/COMPANY_LOCATION_MODEL.md`) describe what the code currently
 > implements, which is intentionally a subset of it. See `docs/COMPANY_LOCATION_MODEL.md`'s "Known gaps vs.
-> BWI_DOMAIN_RULES.md" section for the specific, tracked differences.
+> BWI_DOMAIN_RULES.md" section for the specific, tracked differences. See
+> [`docs/BWI_PRODUCTION_DB_DISCOVERY.md`](docs/BWI_PRODUCTION_DB_DISCOVERY.md) for the July 2026 production-database
+> discovery record informing the write boundaries described below.
 
 ## What this proves first
 

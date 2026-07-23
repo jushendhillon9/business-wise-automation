@@ -16,7 +16,8 @@ import {
   openDb,
   upsertReviewQueue
 } from "./db.ts";
-import type { CompanyIdentity, ExistingCompany, LocationCandidate } from "./types.ts";
+import { companyFieldPath, contactFieldPath, createFieldEvidence, locationFieldPath } from "./types.ts";
+import type { CompanyIdentity, ExistingCompany, FieldEvidence, LocationCandidate } from "./types.ts";
 
 const TEST_DB_PATH = "data/db.test.sqlite";
 
@@ -87,6 +88,89 @@ describe("company identity / location candidate schema", () => {
     const [loaded] = loadLocationCandidates(db);
     expect(loaded?.company.legalName).toBe("Northstar Advisory");
     expect(loaded?.company.sicCode).toBe("8742");
+  });
+});
+
+describe("field-level evidence persistence (Task 6)", () => {
+  test("multiple and conflicting field evidence survive a database round-trip", () => {
+    const company: CompanyIdentity = { id: "co-evidence", legalName: "Acme Evidence Co" };
+    insertCompanyIdentity(db, company);
+
+    const fieldEvidence: FieldEvidence[] = [
+      createFieldEvidence({
+        path: companyFieldPath("website"),
+        value: "https://acme.example",
+        confidence: 0.6,
+        source: { sourceType: "chamber_of_commerce", sourceId: "dfw-json", sourceName: "DFW Chamber Discovery Feed (JSON)" }
+      }),
+      createFieldEvidence({
+        path: locationFieldPath("phone"),
+        value: "214-555-0100",
+        confidence: 0.6,
+        source: { sourceType: "county_business_license", sourceId: "dfw-csv", sourceName: "DFW County Business License Export (CSV)" }
+      }),
+      createFieldEvidence({
+        path: locationFieldPath("phone"),
+        value: "214-555-0199",
+        confidence: 0.6,
+        source: { sourceType: "company_website", sourceId: "manual", sourceName: "Manual check", sourceUrl: "https://acme.example/contact" }
+      }),
+      createFieldEvidence({
+        path: contactFieldPath("contact-1", "email"),
+        value: "jamie@acme.example",
+        confidence: 0.75,
+        source: { sourceType: "hunter_email_verification", sourceId: "manual", sourceName: "Manual check" },
+        evidenceText: "verified deliverable"
+      })
+    ];
+
+    const candidate = makeLocation("loc-evidence", company, {
+      phone: "214-555-0100",
+      contacts: [{ id: "contact-1", name: "Jamie Rivera", email: "jamie@acme.example" }],
+      fieldEvidence
+    });
+    insertLocationCandidate(db, candidate);
+
+    const [loaded] = loadLocationCandidates(db);
+    expect(loaded?.fieldEvidence?.length).toBe(4);
+
+    const phoneEvidence = loaded?.fieldEvidence?.filter((e) => e.path.scope === "location" && e.path.field === "phone") ?? [];
+    expect(phoneEvidence.length).toBe(2);
+    expect(phoneEvidence.map((e) => e.value).sort()).toEqual(["214-555-0100", "214-555-0199"]);
+
+    const contactEvidence = loaded?.fieldEvidence?.find((e) => e.path.scope === "contact" && e.path.contactId === "contact-1");
+    expect(contactEvidence?.value).toBe("jamie@acme.example");
+    expect(contactEvidence?.evidenceText).toBe("verified deliverable");
+  });
+
+  test("a legacy row inserted without fieldEvidence loads safely with fieldEvidence undefined", () => {
+    const company: CompanyIdentity = { id: "co-legacy", legalName: "Legacy Co" };
+    insertCompanyIdentity(db, company);
+    insertLocationCandidate(db, makeLocation("loc-legacy", company));
+
+    const [loaded] = loadLocationCandidates(db);
+    expect(loaded?.fieldEvidence).toBeUndefined();
+  });
+
+  test("re-inserting the same candidate id does not accumulate duplicate rows or evidence", () => {
+    const company: CompanyIdentity = { id: "co-rerun", legalName: "Rerun Co" };
+    insertCompanyIdentity(db, company);
+    const fieldEvidence: FieldEvidence[] = [
+      createFieldEvidence({
+        path: companyFieldPath("website"),
+        value: "https://rerun.example",
+        confidence: 0.6,
+        source: { sourceType: "chamber_of_commerce", sourceId: "dfw-json", sourceName: "DFW Chamber Discovery Feed (JSON)" }
+      })
+    ];
+    const candidate = makeLocation("loc-rerun", company, { fieldEvidence });
+
+    insertLocationCandidate(db, candidate);
+    insertLocationCandidate(db, candidate);
+
+    const loaded = loadLocationCandidates(db);
+    expect(loaded.length).toBe(1);
+    expect(loaded[0]?.fieldEvidence?.length).toBe(1);
   });
 });
 

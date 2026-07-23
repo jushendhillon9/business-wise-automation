@@ -1,4 +1,5 @@
 import { createSchema, loadExistingCompanies, loadLocationCandidates, openDb } from "./db.ts";
+import { formatFieldEvidenceBlock } from "./field-evidence-view.ts";
 
 const db = openDb();
 createSchema(db);
@@ -69,4 +70,16 @@ const table = reviewRows.map((row) => {
 });
 
 console.table(table);
+
+// Per-field evidence/confidence detail (Task 6) -- kept as a separate,
+// readable text block below the scannable summary table above, rather than
+// widening the table with raw evidence JSON. See src/field-evidence-view.ts.
+const candidatesInQueueOrder = reviewRows
+  .map((row) => candidatesById.get(row.locationCandidateId))
+  .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== undefined);
+console.log("");
+for (const line of formatFieldEvidenceBlock(candidatesInQueueOrder)) {
+  console.log(line);
+}
+
 db.close();

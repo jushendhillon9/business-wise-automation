@@ -7,6 +7,14 @@
  * no company-wide contact graph yet.
  */
 export type Contact = {
+  /**
+   * Stable identifier for this contact within its LocationCandidate, used so
+   * field-level evidence (see FieldEvidence/FieldPath below) can stay linked
+   * to the right contact even if the contacts array is reordered or grows.
+   * Optional for backward compatibility with hand-built fixtures/tests that
+   * predate Task 6 and don't need evidence linkage.
+   */
+  id?: string;
   name?: string;
   title?: string;
   email?: string;
@@ -160,6 +168,200 @@ export type SourceProvenance = {
 };
 
 /**
+ * Field-level evidence and confidence (docs/BWI_DOMAIN_RULES.md §15). Answers,
+ * for one proposed value on one company/location/contact field: where did
+ * this specific value come from, how confident are we in it, and — for
+ * inherited/derived values — why was it proposed? This is deliberately
+ * separate from `SourceProvenance` above (which describes where the whole
+ * `LocationCandidate` observation came from) and from `EntityResolutionDecision
+ * .decisionConfidence` (which measures match confidence, a different
+ * question entirely — see docs/COMPANY_LOCATION_MODEL.md). Field confidence
+ * never feeds publication readiness, entity-resolution outcomes, or review
+ * priority; it exists purely so a reviewer can audit a proposed value.
+ */
+
+/** Which part of the domain model a field-evidence record is about. Mirrors ReadinessRuleScope (src/publication-readiness.ts) — kept as a separate type here to avoid a circular import, since publication-readiness.ts already imports from this file. */
+export type EvidenceScope = "company" | "location" | "contact";
+
+/**
+ * Stable identifier for the field a piece of evidence supports. Company/
+ * location fields use a plain "scope.field" pair (matching the same
+ * namespaced-field convention `ResearchCompletenessResult` and
+ * `PublicationReadinessIssue` already use, e.g. "company.website",
+ * "location.phone"). Contact fields additionally carry the contact's own
+ * stable `Contact.id` so evidence never depends on array position — see
+ * "Contact evidence" note on `Contact.id` above.
+ */
+export type FieldPath =
+  | { scope: "company"; field: string }
+  | { scope: "location"; field: string }
+  | { scope: "contact"; contactId: string; field: string };
+
+/** Deterministic string key for grouping/looking up evidence by field — never used as a display label. */
+export function fieldPathKey(path: FieldPath): string {
+  return path.scope === "contact" ? `contact.${path.contactId}.${path.field}` : `${path.scope}.${path.field}`;
+}
+
+export function companyFieldPath(field: string): FieldPath {
+  return { scope: "company", field };
+}
+
+export function locationFieldPath(field: string): FieldPath {
+  return { scope: "location", field };
+}
+
+export function contactFieldPath(contactId: string, field: string): FieldPath {
+  return { scope: "contact", contactId, field };
+}
+
+/**
+ * Confidence scale for field-level evidence: 0 (no confidence) through 1
+ * (fully confirmed) — the same 0–1 convention already used by
+ * `MatchResult.score` and `EntityResolutionDecision.decisionConfidence`,
+ * per docs/BWI_DOMAIN_RULES.md §15. Missing confidence is never treated as
+ * 1 (perfect) — every FieldEvidence record requires an explicit value.
+ */
+export function isValidFieldEvidenceConfidence(value: number): boolean {
+  return Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+/** Throws when confidence is outside the documented [0, 1] scale, instead of silently clamping or accepting it. */
+export function assertValidFieldEvidenceConfidence(value: number): number {
+  if (!isValidFieldEvidenceConfidence(value)) {
+    throw new RangeError(`FieldEvidence confidence must be a number between 0 and 1 (got ${value}).`);
+  }
+  return value;
+}
+
+/**
+ * Deliberately conservative starting confidence for a value read directly
+ * from one external, unverified source record (the common case for the
+ * current DFW fixture adapters — a single chamber/license row, not
+ * independently confirmed). Not a tuned/calibrated value.
+ * Needs confirmation from Jushen: the exact confidence scale/calibration
+ * BW reviewers should expect is not yet defined anywhere in the domain docs.
+ */
+export const SINGLE_SOURCE_OBSERVED_CONFIDENCE = 0.6;
+
+/**
+ * Research source categories a piece of field evidence can come from.
+ * Matches docs/BWI_DOMAIN_RULES.md §15's "Current research source types"
+ * list, plus a few sources that naturally have no URL (an existing BWI
+ * export, a human research judgment call, a locally supplied CSV/manual
+ * record) and a fallback for anything not yet categorized.
+ */
+export type FieldEvidenceSourceType =
+  | "company_website"
+  | "team_page"
+  | "linkedin"
+  | "perplexity_research"
+  | "hunter_email_verification"
+  | "google_search"
+  | "secretary_of_state_filing"
+  | "business_journal"
+  | "chamber_of_commerce"
+  | "economic_development_org"
+  | "county_business_license"
+  | "research_on_demand_request"
+  | "existing_bwi_record"
+  | "human_research_decision"
+  | "other";
+
+/**
+ * Identifies where one field-level evidence record came from. Deliberately
+ * reuses `SourceProvenance`'s own field names (`sourceId`/`sourceName`/
+ * `sourceUrl`/`sourceRecordId`) via `Pick` rather than inventing a second,
+ * incompatible source taxonomy — this is the same source identity concept,
+ * scoped down to what one field-level observation needs. `sourceUrl` stays
+ * optional because not every source naturally has one (an authorized BWI
+ * export, a human research decision, a local CSV row); `sourceObservationId`
+ * is the fallback stable reference for those cases, distinct from
+ * `sourceRecordId` when the two aren't the same thing (e.g. a dedup
+ * fingerprint, or a manually assigned id for a non-ingested source).
+ */
+export type FieldEvidenceSource = Pick<SourceProvenance, "sourceId" | "sourceName" | "sourceUrl" | "sourceRecordId"> & {
+  sourceType: FieldEvidenceSourceType;
+  sourceObservationId?: string;
+};
+
+/**
+ * How a proposed value came to be, distinct from the confidence in it. A
+ * `directly_observed` value with low confidence and an `inherited` value
+ * with high confidence are both legitimate — derivation and confidence are
+ * independent axes.
+ */
+export type FieldEvidenceDerivation =
+  | "directly_observed"
+  | "normalized"
+  | "derived"
+  | "inherited"
+  | "human_confirmed";
+
+/**
+ * Present only when `derivation === "inherited"`. Preserves *why* an
+ * existing company/location value was proposed for a new candidate, and
+ * whether the new candidate has any evidence of its own confirming it —
+ * never assume independent confirmation just because a value was inherited.
+ * This type only describes the shape; no inheritance-proposal logic is
+ * implemented as part of Task 6 (entity-resolution/inheritance rules are
+ * explicitly out of scope here — see docs/COMPANY_LOCATION_MODEL.md
+ * §12.5's "Field inheritance" gap).
+ */
+export type FieldEvidenceInheritance = {
+  /** The existing BWI record (ExistingCompany.id) this value was proposed from, when known. */
+  fromExistingCompanyId?: string;
+  /** The prior source observation (another FieldEvidence's sourceObservationId/fingerprint) this was proposed from, when known. */
+  fromSourceObservationId?: string;
+  reason: string;
+  independentlyConfirmed: boolean;
+};
+
+/**
+ * One piece of evidence supporting a proposed value on one field. A field
+ * may have zero (see "Missing-evidence behavior" in the README), one, or
+ * many `FieldEvidence` records — including several that agree and some
+ * that conflict; nothing in this model ever overwrites or discards earlier
+ * evidence for the same field.
+ */
+export type FieldEvidence<T = unknown> = {
+  path: FieldPath;
+  /** The value this evidence supports, in whatever form the source actually gave it (may equal normalizedValue). */
+  value: T;
+  /** The normalized/typed interpretation of `value`, when it differs (e.g. a normalized SiteType vs. a raw site-type code). */
+  normalizedValue?: T;
+  /** Raw source value as originally given, when useful for audit and distinct from `value`. */
+  rawValue?: unknown;
+  confidence: number;
+  source: FieldEvidenceSource;
+  /** When the source claims this value was captured. Never fabricated for historical evidence when unknown — omit rather than guess. */
+  capturedAt?: string;
+  /** Optional supporting excerpt/quote from the source. */
+  evidenceText?: string;
+  derivation?: FieldEvidenceDerivation;
+  inheritance?: FieldEvidenceInheritance;
+};
+
+export type FieldEvidenceCollection = FieldEvidence[];
+
+/** Validates confidence and returns the evidence unchanged — the canonical way to construct a FieldEvidence so invalid confidence can never silently enter the collection. */
+export function createFieldEvidence<T>(evidence: FieldEvidence<T>): FieldEvidence<T> {
+  assertValidFieldEvidenceConfidence(evidence.confidence);
+  return evidence;
+}
+
+/** Appends one validated evidence record without mutating or overwriting any existing evidence for other fields (or the same field). */
+export function addFieldEvidence(collection: FieldEvidenceCollection, evidence: FieldEvidence): FieldEvidenceCollection {
+  return [...collection, createFieldEvidence(evidence)];
+}
+
+/** All evidence recorded for one specific field, in insertion order. Returns an empty array (not undefined) when none exists. */
+export function evidenceForField(collection: FieldEvidenceCollection | undefined, path: FieldPath): FieldEvidence[] {
+  if (!collection) return [];
+  const key = fieldPathKey(path);
+  return collection.filter((item) => fieldPathKey(item.path) === key);
+}
+
+/**
  * A single observed location for a company, as reported by one source item.
  * Business Wise is location-centric — a real company may have a
  * headquarters, several branches, and a regional HQ, each with its own
@@ -212,9 +414,24 @@ export type LocationCandidate = {
   capturedAt: string;
 
   evidence: string[];
+  /**
+   * Field-level evidence and confidence (see FieldEvidence above), keyed to
+   * individual company/location/contact fields. Optional and defaults to
+   * "no evidence recorded" (never "confirmed" and never confidence 1.0) so
+   * legacy candidates/fixtures created before Task 6 keep loading safely —
+   * see evidenceForField()/hasFieldEvidence() for reading it without special
+   * casing the undefined case. Additive alongside the free-text `evidence`
+   * list above and `rawSourceData` below; neither is replaced by this.
+   */
+  fieldEvidence?: FieldEvidenceCollection;
   /** Original raw source record, kept for audit/debugging. */
   rawSourceData?: unknown;
 };
+
+/** True when at least one FieldEvidence record exists for this field. False (not an exception) is the correct, expected answer for a legacy candidate or a field a source didn't support with evidence. */
+export function hasFieldEvidence(candidate: LocationCandidate, path: FieldPath): boolean {
+  return evidenceForField(candidate.fieldEvidence, path).length > 0;
+}
 
 /**
  * docs/BWI_DOMAIN_RULES.md §4 defines DIRE (published/active), DEL (previously

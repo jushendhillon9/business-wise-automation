@@ -35,9 +35,65 @@ describe("dfw json adapter", () => {
     expect(result.candidate.market).toBe("DFW");
     expect(result.candidate.sourceUrl).toBe("https://dfwchamber.example/reports/2026/0001");
     expect(result.candidate.rawSourceData).toBeDefined();
-    expect(result.candidate.contacts).toEqual([
-      { name: "Morgan Ellis", title: "Operations Director", email: "morgan.ellis@westlinefreight.example", phone: undefined }
-    ]);
+    expect(result.candidate.contacts.length).toBe(1);
+    expect(result.candidate.contacts[0]).toMatchObject({
+      name: "Morgan Ellis",
+      title: "Operations Director",
+      email: "morgan.ellis@westlinefreight.example",
+      phone: undefined
+    });
+    expect(result.candidate.contacts[0]?.id).toBeTruthy();
+  });
+
+  test("attaches field-level evidence for values genuinely present on the source record", () => {
+    const adapter = createDfwJsonAdapter();
+    const result = adapter.toCandidate({
+      recordId: "dfw-2026-0001",
+      data: {
+        reportId: "dfw-2026-0001",
+        companyName: "Westline Freight Solutions",
+        website: "westlinefreight.example",
+        sourceUrl: "https://dfwchamber.example/reports/2026/0001",
+        contactName: "Morgan Ellis",
+        contactEmail: "morgan.ellis@westlinefreight.example",
+        publishedAt: "2026-07-14T09:00:00.000Z"
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const fieldEvidence = result.candidate.fieldEvidence ?? [];
+    expect(fieldEvidence.length).toBeGreaterThan(0);
+    for (const item of fieldEvidence) {
+      expect(item.confidence).toBeGreaterThanOrEqual(0);
+      expect(item.confidence).toBeLessThanOrEqual(1);
+      expect(item.source.sourceType).toBe("chamber_of_commerce");
+      expect(item.source.sourceUrl).toBe("https://dfwchamber.example/reports/2026/0001");
+      // this fixture supplies a captured time, so it must be carried through, never fabricated separately
+      expect(item.capturedAt).toBe("2026-07-14T09:00:00.000Z");
+    }
+
+    const contactId = result.candidate.contacts[0]?.id;
+    const contactNameEvidence = fieldEvidence.find((e) => e.path.scope === "contact" && e.path.contactId === contactId && e.path.field === "name");
+    expect(contactNameEvidence?.value).toBe("Morgan Ellis");
+  });
+
+  test("does not fabricate a capturedAt for field evidence when the source gives no publish time", () => {
+    const adapter = createDfwJsonAdapter();
+    const result = adapter.toCandidate({
+      recordId: "dfw-2026-0002",
+      data: { reportId: "dfw-2026-0002", companyName: "Trinity Grove Bakery Co" }
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const fieldEvidence = result.candidate.fieldEvidence ?? [];
+    expect(fieldEvidence.length).toBeGreaterThan(0);
+    for (const item of fieldEvidence) {
+      expect(item.capturedAt).toBeUndefined();
+    }
   });
 
   test("keeps optional fields optional for a sparse record", () => {

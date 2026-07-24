@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { normalizeBwiLifecycleStatus } from "./bwi-codes.ts";
 import { isPublicationReadyCompat, type PublicationReadinessAssessment } from "./publication-readiness.ts";
+import type { MachineRecommendationSnapshot, ReviewDecision, ReviewFieldCorrection, ReviewQueueStatus } from "./review-decisions.ts";
 import type { ResearchCompletenessResult } from "./scoring.ts";
 import type { CompanyIdentity, EntityResolutionDecision, ExistingCompany, LocationCandidate, MatchResult } from "./types.ts";
 
@@ -197,6 +198,41 @@ export function createSchema(db: Database): void {
       FOREIGN KEY(location_candidate_id) REFERENCES location_candidates(id),
       FOREIGN KEY(first_run_id) REFERENCES source_runs(id)
     );
+
+    -- Append-only reviewer-decision ledger (src/review-decisions.ts). This is
+    -- the source of truth for a candidate's review history -- review_queue's
+    -- review_status/reviewer_note columns are only ever a convenience cache
+    -- of the latest row here, kept in sync by recordReviewDecision(), never
+    -- written any other way. No code path ever UPDATEs or DELETEs a row in
+    -- this table; only INSERT. sequence is 1-based per location_candidate_id,
+    -- assigned inside the same BEGIN IMMEDIATE transaction as the insert so
+    -- concurrent calls can't allocate the same value -- the UNIQUE
+    -- constraint below is a defense-in-depth backstop, not the primary
+    -- guard. selected_bwi_record_id is the reviewer's own chosen target,
+    -- distinct from the machine's recommended match captured inside
+    -- machine_recommendation_json (see MachineRecommendationSnapshot).
+    -- field_corrections_json is captured for audit only in this commit --
+    -- never applied back to location_candidates/company_identities/
+    -- field evidence.
+    CREATE TABLE IF NOT EXISTS review_decisions (
+      id TEXT PRIMARY KEY,
+      location_candidate_id TEXT NOT NULL,
+      sequence INTEGER NOT NULL,
+      reviewer TEXT NOT NULL,
+      action TEXT NOT NULL,
+      previous_status TEXT NOT NULL,
+      new_status TEXT NOT NULL,
+      selected_bwi_record_id TEXT,
+      notes TEXT,
+      machine_recommendation_json TEXT NOT NULL,
+      field_corrections_json TEXT NOT NULL DEFAULT '[]',
+      decided_at TEXT NOT NULL,
+      UNIQUE(location_candidate_id, sequence),
+      FOREIGN KEY(location_candidate_id) REFERENCES location_candidates(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_review_decisions_candidate
+      ON review_decisions(location_candidate_id, sequence);
   `);
 }
 
@@ -431,14 +467,11 @@ export type ReviewQueueRow = {
   /** TEMPORARY compatibility boolean, derived from publicationState. TODO(remove) once consumers read publicationState directly. */
   publicationReady: boolean;
   reviewPriority: number;
-  reviewStatus: string;
+  reviewStatus: ReviewQueueStatus;
 };
 
-/** Reads back everything persisted by `upsertReviewQueue`, including the richer business-resolution outcome. */
-export function loadReviewQueue(db: Database): ReviewQueueRow[] {
-  const rows = db.query(`SELECT * FROM review_queue`).all() as Array<Record<string, unknown>>;
-
-  return rows.map((row) => ({
+function mapReviewQueueRow(row: Record<string, unknown>): ReviewQueueRow {
+  return {
     locationCandidateId: String(row.location_candidate_id),
     bestExistingCompanyId: row.best_existing_company_id ? String(row.best_existing_company_id) : undefined,
     matchScore: Number(row.match_score),
@@ -462,8 +495,28 @@ export function loadReviewQueue(db: Database): ReviewQueueRow[] {
     publicationOptionalMissingFields: JSON.parse(String(row.publication_optional_missing_fields_json)),
     publicationReady: Boolean(row.publication_ready),
     reviewPriority: Number(row.review_priority),
-    reviewStatus: String(row.review_status)
-  }));
+    reviewStatus: String(row.review_status) as ReviewQueueStatus
+  };
+}
+
+/** Reads back everything persisted by `upsertReviewQueue`, including the richer business-resolution outcome. */
+export function loadReviewQueue(db: Database): ReviewQueueRow[] {
+  const rows = db.query(`SELECT * FROM review_queue`).all() as Array<Record<string, unknown>>;
+  return rows.map(mapReviewQueueRow);
+}
+
+/** Single-row lookup by candidate id, used by `recordReviewDecision()` to read the current review_status/machine-recommendation data before recording a new decision. Returns undefined when the candidate hasn't been scored yet (no review_queue row exists). */
+export function loadReviewQueueRowByCandidateId(db: Database, locationCandidateId: string): ReviewQueueRow | undefined {
+  const row = db.query(`SELECT * FROM review_queue WHERE location_candidate_id = ?`).get(locationCandidateId) as Record<string, unknown> | null;
+  return row ? mapReviewQueueRow(row) : undefined;
+}
+
+/** Updates only the two review_queue convenience columns a recorded decision derives -- never touches match/resolution/readiness/priority columns, so a later `upsertReviewQueue` re-score can't retroactively erase a decision's effect (matching that function's existing, deliberate omission of these two columns from its own UPDATE SET list). */
+export function updateReviewQueueStatus(db: Database, locationCandidateId: string, reviewStatus: ReviewQueueStatus, reviewerNote?: string): void {
+  db.query(`
+    UPDATE review_queue SET review_status = ?, reviewer_note = ?
+    WHERE location_candidate_id = ?
+  `).run(reviewStatus, reviewerNote ?? null, locationCandidateId);
 }
 
 export type SourceRun = {
@@ -562,4 +615,67 @@ export function insertSourceRecord(
     record.firstRunId,
     record.firstIngestedAt
   );
+}
+
+function mapReviewDecisionRow(row: Record<string, unknown>): ReviewDecision {
+  return {
+    id: String(row.id),
+    locationCandidateId: String(row.location_candidate_id),
+    sequence: Number(row.sequence),
+    reviewer: String(row.reviewer),
+    action: String(row.action) as ReviewDecision["action"],
+    previousStatus: String(row.previous_status) as ReviewQueueStatus,
+    newStatus: String(row.new_status) as ReviewQueueStatus,
+    selectedBwiRecordId: row.selected_bwi_record_id ? String(row.selected_bwi_record_id) : undefined,
+    notes: row.notes ? String(row.notes) : undefined,
+    machineRecommendation: JSON.parse(String(row.machine_recommendation_json)) as MachineRecommendationSnapshot,
+    fieldCorrections: JSON.parse(String(row.field_corrections_json)) as ReviewFieldCorrection[],
+    decidedAt: String(row.decided_at)
+  };
+}
+
+/**
+ * Plain, unconditional INSERT -- no `OR REPLACE`/`OR IGNORE`/`ON CONFLICT`,
+ * unlike every upsert-style writer elsewhere in this file. There is no
+ * update/delete API for `review_decisions` rows anywhere in this codebase;
+ * the table is append-only by construction, not just by convention. A
+ * caller must go through `recordReviewDecision()` (src/review-decisions.ts),
+ * which allocates `sequence` inside the same transaction as this insert.
+ */
+export function insertReviewDecision(db: Database, decision: ReviewDecision): void {
+  db.query(`
+    INSERT INTO review_decisions
+      (id, location_candidate_id, sequence, reviewer, action, previous_status, new_status,
+       selected_bwi_record_id, notes, machine_recommendation_json, field_corrections_json, decided_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    decision.id,
+    decision.locationCandidateId,
+    decision.sequence,
+    decision.reviewer,
+    decision.action,
+    decision.previousStatus,
+    decision.newStatus,
+    decision.selectedBwiRecordId ?? null,
+    decision.notes ?? null,
+    JSON.stringify(decision.machineRecommendation),
+    JSON.stringify(decision.fieldCorrections),
+    decision.decidedAt
+  );
+}
+
+/** Full decision history for one candidate, oldest first -- the append-only ledger is always readable independently of review_queue's convenience status. */
+export function loadReviewDecisionsForCandidate(db: Database, locationCandidateId: string): ReviewDecision[] {
+  const rows = db.query(`
+    SELECT * FROM review_decisions WHERE location_candidate_id = ? ORDER BY sequence ASC
+  `).all(locationCandidateId) as Array<Record<string, unknown>>;
+  return rows.map(mapReviewDecisionRow);
+}
+
+/** The most recent decision for one candidate, or undefined if none has been recorded yet. */
+export function loadLatestReviewDecisionForCandidate(db: Database, locationCandidateId: string): ReviewDecision | undefined {
+  const row = db.query(`
+    SELECT * FROM review_decisions WHERE location_candidate_id = ? ORDER BY sequence DESC LIMIT 1
+  `).get(locationCandidateId) as Record<string, unknown> | null;
+  return row ? mapReviewDecisionRow(row) : undefined;
 }

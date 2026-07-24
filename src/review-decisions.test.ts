@@ -1,8 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { unlinkSync } from "node:fs";
 import * as dbModule from "./db.ts";
 import {
-  createSchema,
   insertCompanyIdentity,
   insertLocationCandidate,
   insertReviewDecision,
@@ -22,6 +20,7 @@ import {
   type ReviewDecisionAction,
   type ReviewQueueStatus
 } from "./review-decisions.ts";
+import { closeAndRemoveTestDb, openFreshTestDb } from "./test-support/sqlite-test-db.ts";
 import type { CompanyIdentity, EntityResolutionDecision, LocationCandidate, MatchResult } from "./types.ts";
 
 const TEST_DB_PATH = "data/review-decisions.test.sqlite";
@@ -29,22 +28,11 @@ const TEST_DB_PATH = "data/review-decisions.test.sqlite";
 let db: ReturnType<typeof openDb>;
 
 beforeEach(() => {
-  try {
-    unlinkSync(TEST_DB_PATH);
-  } catch {
-    // no previous test db, that's fine
-  }
-  db = openDb(TEST_DB_PATH);
-  createSchema(db);
+  db = openFreshTestDb(TEST_DB_PATH);
 });
 
 afterEach(() => {
-  db.close();
-  try {
-    unlinkSync(TEST_DB_PATH);
-  } catch {
-    // ignore
-  }
+  closeAndRemoveTestDb(db, TEST_DB_PATH);
 });
 
 function seedCandidate(id: string): LocationCandidate {

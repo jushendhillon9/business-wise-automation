@@ -1,8 +1,13 @@
 node_modules/
 data/sandbox.sqlite
 data/sandbox.sqlite-*
-data/ingestion.test.sqlite
-data/ingestion.test.sqlite-*
+
+# Disposable per-test-file sqlite databases (db.test.ts, ingestion.test.ts,
+# review-decisions.test.ts, and any future ones) plus their WAL/SHM sidecars
+# -- see src/test-support/sqlite-test-db.ts.
+data/*.test.sqlite
+data/*.test.sqlite-shm
+data/*.test.sqlite-wal
 
 # Private, production-derived Business Wise snapshot data (real DFW BWI
 # records/relationships). Never committed -- see data/private/bwi/README.md.

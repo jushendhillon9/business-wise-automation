@@ -1,32 +1,21 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { unlinkSync } from "node:fs";
-import { createSchema, loadLocationCandidates, openDb } from "./db.ts";
+import { loadLocationCandidates, openDb } from "./db.ts";
 import { runIngestion } from "./ingestion.ts";
 import { createDfwCsvAdapter } from "./sources/dfw-csv-adapter.ts";
 import { createDfwJsonAdapter } from "./sources/dfw-json-adapter.ts";
 import type { SourceAdapter } from "./sources/types.ts";
+import { closeAndRemoveTestDb, openFreshTestDb } from "./test-support/sqlite-test-db.ts";
 
 const TEST_DB_PATH = "data/ingestion.test.sqlite";
 
 let db: ReturnType<typeof openDb>;
 
 beforeEach(() => {
-  try {
-    unlinkSync(TEST_DB_PATH);
-  } catch {
-    // no previous test db, that's fine
-  }
-  db = openDb(TEST_DB_PATH);
-  createSchema(db);
+  db = openFreshTestDb(TEST_DB_PATH);
 });
 
 afterEach(() => {
-  db.close();
-  try {
-    unlinkSync(TEST_DB_PATH);
-  } catch {
-    // ignore
-  }
+  closeAndRemoveTestDb(db, TEST_DB_PATH);
 });
 
 function mockAdapter(sourceId: string, sourceName: string, recordId: string, companyName: string): SourceAdapter {

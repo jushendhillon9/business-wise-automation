@@ -3,3 +3,14 @@ data/sandbox.sqlite
 data/sandbox.sqlite-*
 data/ingestion.test.sqlite
 data/ingestion.test.sqlite-*
+
+# Private, production-derived Business Wise snapshot data (real DFW BWI
+# records/relationships). Never committed -- see data/private/bwi/README.md.
+data/private/bwi/*.csv
+data/private/bwi/*.tsv
+data/private/bwi/*.json
+data/private/bwi/*.db
+data/private/bwi/*.sqlite
+.env
+.env.*
+!.env.example

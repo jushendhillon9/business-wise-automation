@@ -439,15 +439,22 @@ export function hasFieldEvidence(candidate: LocationCandidate, path: FieldPath):
  * "Unresolved spelling" per that document). Earlier discovery notes in this
  * repo instead used "RDL" and a plain "research" status. That discrepancy is
  * NOT resolved — do not silently normalize one to the other; see open domain
- * questions §23.1–2. All five raw-looking values are kept below until
+ * questions §23.1–2. All raw-looking values are kept below until
  * Emily/Rif/Randall confirm which strings are actually persisted in BW's
  * system. This is the raw value — see `ExistingCompany.lifecycleStatus` for
  * the normalized counterpart, computed by `normalizeBwiLifecycleStatus()` in
  * src/bwi-codes.ts, which maps both "RDL" and "RDEL" to the same
  * `research_deleted` semantic value without erasing which raw spelling was
  * actually stored.
+ *
+ * `KEEP` | `RSCH` | `DELE` were added on top of the earlier discovery-notes
+ * spellings (never replacing them) once the real July 2026 DFW BWI production
+ * snapshot (`src/business-wise-snapshot-adapter.ts`) confirmed these as
+ * status codes actually present in exported data. This is additional
+ * evidence, not full resolution — `KEEP`'s semantics are still unconfirmed;
+ * see src/bwi-codes.ts.
  */
-export type ExistingCompanyStatus = "DIRE" | "DEL" | "RDEL" | "RDL" | "research";
+export type ExistingCompanyStatus = "DIRE" | "DEL" | "RDEL" | "RDL" | "research" | "KEEP" | "RSCH" | "DELE";
 
 /**
  * A known Business Wise location record to match candidates against. Kept

@@ -75,7 +75,16 @@ const LIFECYCLE_CODE_TO_STATUS: Record<string, BwiLifecycleStatus> = {
   DEL: "deleted",
   RDL: "research_deleted",
   RDEL: "research_deleted",
-  RESEARCH: "research"
+  RESEARCH: "research",
+  // RSCH/DELE observed directly in the real July 2026 DFW BWI production
+  // snapshot (src/business-wise-snapshot-adapter.ts), alongside DIRE/RDEL.
+  // Mapped on the same high-confidence abbreviation pattern as the existing
+  // DEL->deleted / RESEARCH->research entries above. "KEEP" was also observed
+  // but is deliberately left unmapped (falls through to "unknown" below) --
+  // no BWI documentation confirms its semantics, and this module never
+  // fabricates a mapping without evidence (see module doc comment).
+  RSCH: "research",
+  DELE: "deleted"
 };
 
 const KNOWN_LIFECYCLE_VALUES = new Set<BwiLifecycleStatus>(["published", "research", "deleted", "research_deleted"]);

@@ -401,6 +401,44 @@ See `src/enrichment/*.test.ts` for the full behavioral contract (missing-field f
 independent provider failure, `not_found` vs. `failed`, conflict preservation, evidence dedup on rerun, and
 human-confirmed protection).
 
+## Labeled entity-resolution evaluation harness
+
+`src/eval/` measures `resolveCandidateAgainstExisting()`/`rankCandidateMatches()` (`src/entity-resolution.ts`,
+`src/entity-resolution-policy.ts`) against a labeled dataset of candidate/existing-record pairs with a human's
+expected verdict — the "build a labeled evaluation dataset" item from the engineering-steps list below. It calls
+the exact same production functions the normal pipeline uses; there is no second matching implementation, and
+nothing here ever tunes `entity-resolution-policy.ts`'s named thresholds automatically.
+
+```bash
+bun run evaluate                                                    # data/eval/entity-resolution-cases.sample.json, text output
+bun run evaluate --cases=data/eval/synthetic,data/eval/real         # multiple files/directories, comma-separated
+bun run evaluate --format=json --out=report.json                    # machine-readable report, also saved to disk
+bun run evaluate --json --out=report.json                           # --json is an alias for --format=json
+```
+
+- **Dataset format**: a versioned envelope (`{ datasetId, schemaVersion, cases: [...] }`, never a bare array) so a
+  future schema change is always explicit. Each case's `candidate`/`existingCompanies` are exactly the production
+  `LocationCandidate`/`ExistingCompany[]` types — a real Emily/Jen case is just JSON in that same shape, dropped
+  into a new file or directory; no harness code changes to add real cases.
+- **Outcome accuracy vs. matched-record accuracy vs. full-case accuracy** are reported as three separate numbers,
+  overall and per expected outcome — a case can get the right `EntityResolutionOutcome` but the wrong existing
+  record, and the harness never conflates the two.
+- **Retrieval metrics** (`recall@1/@3/@5`, mean reciprocal rank, mean/median expected-record rank) measure
+  `rankCandidateMatches()` alone, independent of what the policy layer decided — a low-ranked correct match and a
+  wrong final classification are different failure modes with different fixes.
+- **False-existing-link rate** (expected `likely_new_company`, actual an existing-related outcome) and
+  **false-new rate** (the reverse) are the two costly directional errors; `ambiguous_manual_review` is reported
+  separately as an abstention rate, never folded into either.
+- **Confidence calibration** buckets cases by `decisionConfidence` into fixed bands, plus an explicit `unscored`
+  bucket for a missing confidence (never silently treated as zero) — purely observational, since
+  `decisionConfidence` is a documented heuristic, not a calibrated probability.
+- **Fails closed**: if the loader finds any validation problem anywhere in the loaded dataset(s), the CLI prints
+  every attributable error, exits non-zero, and produces no report at all — never a partial evaluation over
+  whatever happened to be valid.
+- The shipped `data/eval/entity-resolution-cases.sample.json` is a small **synthetic** dataset (10 cases, one or
+  two per `EntityResolutionOutcome`, mirroring `entity-resolution-policy.test.ts`'s own fixtures) that exists to
+  verify the harness itself — not to represent real BWI data or to claim the current thresholds are validated.
+
 ## Run locally
 
 Requires Bun.
@@ -451,10 +489,6 @@ Expected behavior with the sample data (`bun run reset && bun run queue`):
   completeness and review priority (it falls in the 10–99 employee core segment) while still `state: "blocked"` —
   priority and completeness never imply readiness, and readiness never implies approval or production write access.
 
-`data/candidates.sample.json` is the original, pre-ingestion-layer, pre-company/location-split fixture and is no
-longer read by any script; it's kept only for reference and does not reflect the current domain model. New sample
-data belongs under `data/sources/` behind a `SourceAdapter`.
-
 See **`docs/COMPANY_LOCATION_MODEL.md`** for the company-identity/location-candidate domain model in depth.
 
 ## Next engineering steps
@@ -471,7 +505,7 @@ code-focused follow-ups building on that:
    `status` + `lifecycleStatus` — is already implemented; what's left is the underlying spelling question.)
 4. ~~Add field-level evidence provenance (`FieldEvidence<T>` per `docs/BWI_DOMAIN_RULES.md` §15) so every proposed value can be inspected by Emily/Jen.~~ **Done (Task 6)** — see "Field-level evidence and confidence" above. Still open: the actual confidence-scale calibration (needs confirmation from Jushen), and wiring real field-level evidence into an inheritance-proposal flow (item 8 below).
 5. Add enrichment adapters for website, LinkedIn/team pages, phone/email validation, and SIC proposal.
-6. Build a **labeled evaluation dataset** (real or realistic candidate/existing-record pairs with a researcher's actual same-location/branch/HQ/name-change/new-company judgment) and use it to measure precision/recall per `EntityResolutionOutcome` and retune the named thresholds in `src/entity-resolution-policy.ts` (`STRONG_COMPANY_NAME_SCORE`, `STRONG_ADDRESS_SCORE`, `AMBIGUOUS_SCORE_MARGIN`, etc.) — those thresholds are reasoned defaults today, not calibrated ones.
+6. ~~Build a **labeled evaluation dataset**...~~ **Done (harness)** — `bun run evaluate` (see "Labeled entity-resolution evaluation harness" above) measures accuracy/retrieval/directional-error/calibration metrics against a labeled dataset. Still open: replacing the shipped synthetic dataset with real Emily/Jen-labeled cases, and using the harness's findings to deliberately retune the named thresholds in `src/entity-resolution-policy.ts` (`STRONG_COMPANY_NAME_SCORE`, `STRONG_ADDRESS_SCORE`, `AMBIGUOUS_SCORE_MARGIN`, etc.) — those thresholds are still reasoned defaults, not calibrated ones, and the harness deliberately never adjusts them automatically.
 7. Split `possible_changed_location` back into `docs/BWI_DOMAIN_RULES.md` §12.4's separate `possible_same_location_changed_details` / `possible_headquarters_move` outcomes once there's reliable evidence (e.g. confirmed move dates) to distinguish them — see `docs/COMPANY_LOCATION_MODEL.md`'s gaps section for why they're merged today.
 8. Implement the §12.5 field-inheritance proposal (safe company-level fields like website/SIC/start year proposed for inheritance when linking a `new_branch_of_existing_company`/`new_headquarters_of_existing_company` to its matched identity) — `EntityResolutionDecision` already surfaces the matched/related existing-company ids needed for this.
 9. Build a simple review UI only after the candidate schema and review decisions stabilize — a natural place to surface `EntityResolutionDecision.reasons`/`conflicts`/`alternativeMatches` for a reviewer.

@@ -1,0 +1,272 @@
+{
+  "datasetId": "synthetic-sample-v1",
+  "schemaVersion": "1.0",
+  "cases": [
+    {
+      "caseId": "same-existing-location-name-address",
+      "description": "Strong company identity + strong address match -> same_existing_location.",
+      "candidate": {
+        "id": "loc-1",
+        "company": { "id": "co-1", "legalName": "Acme Robotics, Inc.", "website": "https://acmerobotics.example", "sicCode": "3559" },
+        "physicalAddress": { "street": "100 Main St", "city": "Dallas", "state": "TX", "postalCode": "75201" },
+        "contacts": [],
+        "evidence": [],
+        "source": { "sourceId": "synthetic", "sourceName": "Synthetic eval fixture", "fingerprint": "synthetic:loc-1", "ingestedAt": "2026-07-01T00:00:00.000Z" },
+        "capturedAt": "2026-07-01T00:00:00.000Z"
+      },
+      "existingCompanies": [
+        {
+          "id": "bw-100",
+          "companyName": "Acme Robotics Inc.",
+          "address": "100 Main St",
+          "city": "Dallas",
+          "state": "TX",
+          "postalCode": "75201",
+          "phone": "214-555-0100",
+          "website": "https://acmerobotics.example",
+          "sicCode": "3559",
+          "status": "DIRE",
+          "lifecycleStatus": "published"
+        }
+      ],
+      "expected": { "outcome": "same_existing_location", "matchedExistingCompanyId": "bw-100" },
+      "provenance": { "source": "synthetic", "notes": "Mirrors entity-resolution-policy.test.ts case 1." }
+    },
+    {
+      "caseId": "same-existing-location-phone-geo",
+      "description": "Exact phone + compatible geography supports same_existing_location even with a weak street match.",
+      "candidate": {
+        "id": "loc-2",
+        "company": { "id": "co-2", "legalName": "Acme Robotics, Inc.", "website": "https://acmerobotics.example" },
+        "phone": "214-555-0100",
+        "physicalAddress": { "city": "Dallas", "state": "TX" },
+        "contacts": [],
+        "evidence": [],
+        "source": { "sourceId": "synthetic", "sourceName": "Synthetic eval fixture", "fingerprint": "synthetic:loc-2", "ingestedAt": "2026-07-01T00:00:00.000Z" },
+        "capturedAt": "2026-07-01T00:00:00.000Z"
+      },
+      "existingCompanies": [
+        {
+          "id": "bw-100",
+          "companyName": "Acme Robotics Inc.",
+          "address": "100 Main St",
+          "city": "Dallas",
+          "state": "TX",
+          "postalCode": "75201",
+          "phone": "214-555-0100",
+          "website": "https://acmerobotics.example",
+          "sicCode": "3559",
+          "status": "DIRE",
+          "lifecycleStatus": "published"
+        }
+      ],
+      "expected": { "outcome": "same_existing_location", "matchedExistingCompanyId": "bw-100" },
+      "provenance": { "source": "synthetic", "notes": "Mirrors entity-resolution-policy.test.ts case 2." }
+    },
+    {
+      "caseId": "new-branch-of-existing-company",
+      "description": "Strong company identity, materially different location, siteType branch -> new_branch_of_existing_company.",
+      "candidate": {
+        "id": "loc-3",
+        "company": { "id": "co-3", "legalName": "Acme Robotics, Inc.", "website": "https://acmerobotics.example" },
+        "physicalAddress": { "street": "999 Nowhere Rd", "city": "Austin", "state": "TX", "postalCode": "78701" },
+        "siteType": "branch",
+        "contacts": [],
+        "evidence": [],
+        "source": { "sourceId": "synthetic", "sourceName": "Synthetic eval fixture", "fingerprint": "synthetic:loc-3", "ingestedAt": "2026-07-01T00:00:00.000Z" },
+        "capturedAt": "2026-07-01T00:00:00.000Z"
+      },
+      "existingCompanies": [
+        {
+          "id": "bw-100",
+          "companyName": "Acme Robotics Inc.",
+          "address": "100 Main St",
+          "city": "Dallas",
+          "state": "TX",
+          "postalCode": "75201",
+          "phone": "214-555-0100",
+          "website": "https://acmerobotics.example",
+          "sicCode": "3559",
+          "status": "DIRE",
+          "lifecycleStatus": "published"
+        }
+      ],
+      "expected": { "outcome": "new_branch_of_existing_company", "matchedExistingCompanyId": "bw-100" },
+      "provenance": { "source": "synthetic", "notes": "Mirrors entity-resolution-policy.test.ts case 3." }
+    },
+    {
+      "caseId": "new-headquarters-of-existing-company",
+      "description": "Strong company identity, materially different location, siteType headquarters -> new_headquarters_of_existing_company.",
+      "candidate": {
+        "id": "loc-4",
+        "company": { "id": "co-4", "legalName": "Acme Robotics, Inc.", "website": "https://acmerobotics.example" },
+        "physicalAddress": { "street": "999 Nowhere Rd", "city": "Austin", "state": "TX", "postalCode": "78701" },
+        "siteType": "headquarters",
+        "contacts": [],
+        "evidence": [],
+        "source": { "sourceId": "synthetic", "sourceName": "Synthetic eval fixture", "fingerprint": "synthetic:loc-4", "ingestedAt": "2026-07-01T00:00:00.000Z" },
+        "capturedAt": "2026-07-01T00:00:00.000Z"
+      },
+      "existingCompanies": [
+        {
+          "id": "bw-100",
+          "companyName": "Acme Robotics Inc.",
+          "address": "100 Main St",
+          "city": "Dallas",
+          "state": "TX",
+          "postalCode": "75201",
+          "phone": "214-555-0100",
+          "website": "https://acmerobotics.example",
+          "sicCode": "3559",
+          "status": "DIRE",
+          "lifecycleStatus": "published"
+        }
+      ],
+      "expected": { "outcome": "new_headquarters_of_existing_company", "matchedExistingCompanyId": "bw-100" },
+      "provenance": { "source": "synthetic", "notes": "Mirrors entity-resolution-policy.test.ts case 4." }
+    },
+    {
+      "caseId": "possible-changed-location",
+      "description": "Strong company identity, materially different location, missing site type -> possible_changed_location.",
+      "candidate": {
+        "id": "loc-5",
+        "company": { "id": "co-5", "legalName": "Acme Robotics, Inc.", "website": "https://acmerobotics.example" },
+        "physicalAddress": { "street": "999 Nowhere Rd", "city": "Austin", "state": "TX", "postalCode": "78701" },
+        "contacts": [],
+        "evidence": [],
+        "source": { "sourceId": "synthetic", "sourceName": "Synthetic eval fixture", "fingerprint": "synthetic:loc-5", "ingestedAt": "2026-07-01T00:00:00.000Z" },
+        "capturedAt": "2026-07-01T00:00:00.000Z"
+      },
+      "existingCompanies": [
+        {
+          "id": "bw-100",
+          "companyName": "Acme Robotics Inc.",
+          "address": "100 Main St",
+          "city": "Dallas",
+          "state": "TX",
+          "postalCode": "75201",
+          "phone": "214-555-0100",
+          "website": "https://acmerobotics.example",
+          "sicCode": "3559",
+          "status": "DIRE",
+          "lifecycleStatus": "published"
+        }
+      ],
+      "expected": { "outcome": "possible_changed_location", "matchedExistingCompanyId": "bw-100" },
+      "provenance": { "source": "synthetic", "notes": "Mirrors entity-resolution-policy.test.ts case 5." }
+    },
+    {
+      "caseId": "possible-name-change",
+      "description": "Strong location match + materially different name, but domain continuity -> possible_name_change.",
+      "candidate": {
+        "id": "loc-6",
+        "company": { "id": "co-6", "legalName": "Titan Fabrication Group", "website": "https://acmerobotics.example" },
+        "physicalAddress": { "street": "100 Main St", "city": "Dallas", "state": "TX", "postalCode": "75201" },
+        "contacts": [],
+        "evidence": [],
+        "source": { "sourceId": "synthetic", "sourceName": "Synthetic eval fixture", "fingerprint": "synthetic:loc-6", "ingestedAt": "2026-07-01T00:00:00.000Z" },
+        "capturedAt": "2026-07-01T00:00:00.000Z"
+      },
+      "existingCompanies": [
+        {
+          "id": "bw-100",
+          "companyName": "Acme Robotics Inc.",
+          "address": "100 Main St",
+          "city": "Dallas",
+          "state": "TX",
+          "postalCode": "75201",
+          "phone": "214-555-0100",
+          "website": "https://acmerobotics.example",
+          "sicCode": "3559",
+          "status": "DIRE",
+          "lifecycleStatus": "published"
+        }
+      ],
+      "expected": { "outcome": "possible_name_change", "matchedExistingCompanyId": "bw-100" },
+      "provenance": { "source": "synthetic", "notes": "Mirrors entity-resolution-policy.test.ts case 6." }
+    },
+    {
+      "caseId": "ambiguous-multiple-plausible-identities",
+      "description": "Conflicting signals across multiple plausible existing locations for the same identity -> ambiguous_manual_review.",
+      "candidate": {
+        "id": "loc-7",
+        "company": { "id": "co-7", "legalName": "Acme Robotics", "website": "https://acmerobotics.example" },
+        "physicalAddress": { "street": "500 Somewhere Blvd", "city": "Dallas", "state": "TX" },
+        "contacts": [],
+        "evidence": [],
+        "source": { "sourceId": "synthetic", "sourceName": "Synthetic eval fixture", "fingerprint": "synthetic:loc-7", "ingestedAt": "2026-07-01T00:00:00.000Z" },
+        "capturedAt": "2026-07-01T00:00:00.000Z"
+      },
+      "existingCompanies": [
+        { "id": "bw-A", "companyName": "Acme Robotics Inc.", "address": "1 Foo St", "city": "Houston", "state": "TX", "website": "https://acmerobotics.example" },
+        { "id": "bw-B", "companyName": "Acme Robotics LLC", "address": "2 Bar Ave", "city": "Austin", "state": "TX" }
+      ],
+      "expected": { "outcome": "ambiguous_manual_review" },
+      "provenance": { "source": "synthetic", "notes": "Mirrors entity-resolution-policy.test.ts case 9. No single matched record is expected -- the policy never picks one here." }
+    },
+    {
+      "caseId": "ambiguous-two-close-top-matches",
+      "description": "Two close, plausible top matches -> ambiguous_manual_review.",
+      "candidate": {
+        "id": "loc-8",
+        "company": { "id": "co-8", "legalName": "Falcon Systems" },
+        "physicalAddress": { "street": "77 Falcon Way", "city": "Dallas", "state": "TX", "postalCode": "75001" },
+        "contacts": [],
+        "evidence": [],
+        "source": { "sourceId": "synthetic", "sourceName": "Synthetic eval fixture", "fingerprint": "synthetic:loc-8", "ingestedAt": "2026-07-01T00:00:00.000Z" },
+        "capturedAt": "2026-07-01T00:00:00.000Z"
+      },
+      "existingCompanies": [
+        { "id": "bw-C", "companyName": "Falcon Systems Inc", "address": "77 Falcon Way", "city": "Dallas", "state": "TX", "postalCode": "75001" },
+        { "id": "bw-D", "companyName": "Falcon Systems LLC", "address": "77 Falcon Way", "city": "Dallas", "state": "TX", "postalCode": "75001" }
+      ],
+      "expected": { "outcome": "ambiguous_manual_review" },
+      "provenance": { "source": "synthetic", "notes": "Mirrors entity-resolution-policy.test.ts case 10." }
+    },
+    {
+      "caseId": "likely-new-no-credible-match",
+      "description": "No credible match against the comparison set -> likely_new_company.",
+      "candidate": {
+        "id": "loc-9",
+        "company": { "id": "co-9", "legalName": "Zephyr Consulting Group" },
+        "physicalAddress": { "street": "1 Random Way", "city": "Miami", "state": "FL" },
+        "contacts": [],
+        "evidence": [],
+        "source": { "sourceId": "synthetic", "sourceName": "Synthetic eval fixture", "fingerprint": "synthetic:loc-9", "ingestedAt": "2026-07-01T00:00:00.000Z" },
+        "capturedAt": "2026-07-01T00:00:00.000Z"
+      },
+      "existingCompanies": [
+        {
+          "id": "bw-100",
+          "companyName": "Acme Robotics Inc.",
+          "address": "100 Main St",
+          "city": "Dallas",
+          "state": "TX",
+          "postalCode": "75201",
+          "phone": "214-555-0100",
+          "website": "https://acmerobotics.example",
+          "sicCode": "3559",
+          "status": "DIRE",
+          "lifecycleStatus": "published"
+        }
+      ],
+      "expected": { "outcome": "likely_new_company" },
+      "provenance": { "source": "synthetic", "notes": "Mirrors entity-resolution-policy.test.ts case 7." }
+    },
+    {
+      "caseId": "likely-new-no-existing-records",
+      "description": "No existing records to compare against at all -> likely_new_company.",
+      "candidate": {
+        "id": "loc-10",
+        "company": { "id": "co-10", "legalName": "Brand New Startup" },
+        "contacts": [],
+        "evidence": [],
+        "source": { "sourceId": "synthetic", "sourceName": "Synthetic eval fixture", "fingerprint": "synthetic:loc-10", "ingestedAt": "2026-07-01T00:00:00.000Z" },
+        "capturedAt": "2026-07-01T00:00:00.000Z"
+      },
+      "existingCompanies": [],
+      "expected": { "outcome": "likely_new_company" },
+      "provenance": { "source": "synthetic", "notes": "Mirrors entity-resolution-policy.test.ts case 8." }
+    }
+  ]
+}

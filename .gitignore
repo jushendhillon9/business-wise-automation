@@ -16,6 +16,12 @@ data/private/bwi/*.tsv
 data/private/bwi/*.json
 data/private/bwi/*.db
 data/private/bwi/*.sqlite
+
+# Private local pulls from external source profilers (e.g. the Texas
+# sales-tax-permit profiler) -- raw observations, profiles, and pilot
+# samples never committed. See src/tx-permits-profile.ts.
+data/private/sources/
+
 .env
 .env.*
 !.env.example

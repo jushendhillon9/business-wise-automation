@@ -554,6 +554,62 @@ this module does not fabricate one (it normalizes to `unknown`, `recognized: fal
 unrecognized code always gets — see "Known BWI status discrepancy" above, which this evidence partially informs but
 does not fully resolve).
 
+## Texas sales-tax permit source (profiling only)
+
+`src/sources/tx-sales-tax-permits/` + `src/tx-permits-profile.ts` (`bun run source:tx-permits:profile`) evaluate a
+**confirmed live, official** top-of-funnel source before any permanent integration work is built: the Texas
+Comptroller's "Texas Sales Tax Permit Holders" dataset on data.texas.gov (dataset ID **`jrea-zgmq`**), via its
+official Socrata Query API v3 (`POST https://data.texas.gov/api/v3/views/jrea-zgmq/query.json`) — never HTML
+scraping. This is deliberately a **source profiler, not a permanent adapter**: it does not instantiate
+`BusinessWiseSnapshotAdapter`, run entity resolution, write to the review queue, or build a `SourceAdapter` — see
+"What this stage explicitly does not do" below.
+
+**Setup:** export `SOCRATA_APP_TOKEN` (never hard-coded, never printed, never written to any output file or test
+fixture). A live run fails immediately with a clear error if it's unset.
+
+```bash
+export SOCRATA_APP_TOKEN=...
+bun run source:tx-permits:profile --days=7 --limit=100
+```
+
+**Supported flags** (all optional): `--days=<n>` (default 7), `--from=<YYYY-MM-DD>` / `--to=<YYYY-MM-DD>` (must be
+given together, overrides `--days`), `--limit=<n>` (default 500 — always bounded, never a full statewide pull),
+`--counties=<comma-separated codes>` (default `043,057,061,220` — Collin/Dallas/Denton/Tarrant; **not** asserted as
+Business Wise's final DFW definition, just a configurable starting point), `--page-size=<n>` (default 1000, capped
+at Socrata's own 1000-row page limit), `--output=<path>` (override the default private output directory),
+`--seed=<n>` (pilot-sample determinism, default 1).
+
+**Private output directory:** `data/private/sources/tx-sales-tax-permits/<pull-date>/` (gitignored — see
+`.gitignore`'s `data/private/sources/` rule), containing `raw.ndjson` (complete raw API records plus fetch/query
+metadata, untouched), `profile.json` (aggregates only), `pilot-sample.json` (`source_record_id` references plus
+sampling labels, not duplicated raw rows), and `manifest.json` (dataset ID, fetch timestamp, query window, counties,
+row/page counts, file names, sha256 checksums).
+
+**What it measures:** total/unique/duplicate `source_record_id` counts (`taxpayer_number:outlet_number`), unique
+taxpayers and how many have multiple outlets, county/organization-type/NAICS(2- and 3-digit) distributions, missing
+outlet name/address/city/ZIP/NAICS/permit-issue-date/first-sales-date rates, taxpayer-name-vs-outlet-name
+differences, a PO-box-like address count, a **heuristic-only** (never a verified classification) residential-risk
+address count, and inside/outside-city-limits counts. A deterministic ~70/30 priority-stratified/random-control
+pilot sample (capped at 100, reproducible for a fixed `--seed`) is generated across organization type, NAICS
+prefix, multi-outlet status, first-sales-date presence, name-difference, address-risk, and county — the
+random-control slice always draws from the full eligible population, and no group (sole proprietors, a NAICS code,
+an address-risk flag, ...) is silently excluded from either portion.
+
+**What this stage explicitly does not do:** instantiate `BusinessWiseSnapshotAdapter`, run entity resolution, write
+to the review queue, change matching thresholds, classify anything as a new company/branch, enrich candidates,
+build a permanent `SourceAdapter`, write to Business Wise or Delphi, connect to BWI production SQL, build a UI, or
+schedule recurring pulls. This is a gate before any of that — the permanent adapter is only built after the
+aggregate profile results are reviewed.
+
+**Terminal output is aggregate-only:** dataset ID, date window, counties, page/observation/duplicate/malformed
+counts, the metrics above, elapsed time, and private output paths. It never prints a company/taxpayer/outlet name,
+an address, a taxpayer/outlet number, a raw row, or the app token.
+
+**Data safety:** the private output directory is gitignored the same way `data/private/bwi/` is — never commit
+`raw.ndjson`/`pilot-sample.json`, never upload them elsewhere, never copy real rows into tests/fixtures/docs (every
+test in `src/sources/tx-sales-tax-permits/*.test.ts` uses fabricated taxpayer/outlet data against a stubbed
+`fetchImpl`, never the real API).
+
 ## Next engineering steps
 
 `docs/BWI_DOMAIN_RULES.md` §23 ("Open domain questions") is the authoritative backlog of what needs confirming from

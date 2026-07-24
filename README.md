@@ -413,6 +413,7 @@ nothing here ever tunes `entity-resolution-policy.ts`'s named thresholds automat
 bun run evaluate                                                    # data/eval/entity-resolution-cases.sample.json, text output
 bun run evaluate --cases=data/eval/synthetic,data/eval/real         # multiple files/directories, comma-separated
 bun run evaluate --format=json --out=report.json                    # machine-readable report, also saved to disk
+bun run evaluate --json --out=report.json                           # --json is an alias for --format=json
 ```
 
 - **Dataset format**: a versioned envelope (`{ datasetId, schemaVersion, cases: [...] }`, never a bare array) so a
@@ -487,10 +488,6 @@ Expected behavior with the sample data (`bun run reset && bun run queue`):
 - **Cedar Ridge Analytics** is a good example of the four-concepts split: it has relatively high research
   completeness and review priority (it falls in the 10–99 employee core segment) while still `state: "blocked"` —
   priority and completeness never imply readiness, and readiness never implies approval or production write access.
-
-`data/candidates.sample.json` is the original, pre-ingestion-layer, pre-company/location-split fixture and is no
-longer read by any script; it's kept only for reference and does not reflect the current domain model. New sample
-data belongs under `data/sources/` behind a `SourceAdapter`.
 
 See **`docs/COMPANY_LOCATION_MODEL.md`** for the company-identity/location-candidate domain model in depth.
 

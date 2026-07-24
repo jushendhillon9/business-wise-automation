@@ -14,6 +14,7 @@ import { buildConfidenceCalibrationTable, buildConfusionMatrixTable, buildOutcom
  *   bun run evaluate
  *   bun run evaluate --cases=data/eval/entity-resolution-cases.sample.json
  *   bun run evaluate --cases=data/eval/synthetic,data/eval/real --format=json --out=report.json
+ *   bun run evaluate --json --out=report.json    (--json is an alias for --format=json)
  */
 function argValue(flag: string): string | undefined {
   const prefix = `--${flag}=`;
@@ -21,10 +22,14 @@ function argValue(flag: string): string | undefined {
   return arg?.slice(prefix.length);
 }
 
+function hasFlag(flag: string): boolean {
+  return process.argv.includes(`--${flag}`);
+}
+
 const DEFAULT_CASES_PATH = "data/eval/entity-resolution-cases.sample.json";
 
 const casePaths = (argValue("cases") ?? DEFAULT_CASES_PATH).split(",").map((p) => p.trim()).filter(Boolean);
-const format = argValue("format") === "json" ? "json" : "text";
+const format = hasFlag("json") || argValue("format") === "json" ? "json" : "text";
 const outPath = argValue("out");
 
 const { datasets, errors } = await loadEntityResolutionCases(casePaths);

@@ -158,6 +158,19 @@ describe("profileTxPermitObservations", () => {
     expect(profile.cityLimitsUnknownCount).toBe(1);
   });
 
+  test("reports the raw, unmapped city-limits code distribution without guessing semantics for unrecognized codes", () => {
+    const observations = [
+      observation(fakeRow({ taxpayer_number: "1", outlet_number: "1", outlet_inside_outside_city_limits_indicator: "Y" })),
+      observation(fakeRow({ taxpayer_number: "2", outlet_number: "1", outlet_inside_outside_city_limits_indicator: "Y" })),
+      observation(fakeRow({ taxpayer_number: "3", outlet_number: "1", outlet_inside_outside_city_limits_indicator: "N" })),
+      observation(fakeRow({ taxpayer_number: "4", outlet_number: "1", outlet_inside_outside_city_limits_indicator: undefined }))
+    ];
+    const profile = profileTxPermitObservations(observations);
+    expect(profile.cityLimitRawCodeCounts).toEqual({ Y: 2, N: 1, "(missing)": 1 });
+    // All four unrecognized (not I/O-prefixed) codes fall into "unknown" -- never guessed.
+    expect(profile.cityLimitsUnknownCount).toBe(4);
+  });
+
   test("handles an empty observation list without throwing", () => {
     const profile = profileTxPermitObservations([]);
     expect(profile.totalObservations).toBe(0);

@@ -22,6 +22,11 @@ data/private/bwi/*.sqlite
 # samples never committed. See src/tx-permits-profile.ts.
 data/private/sources/
 
+# Private local shadow-pilot output (isolated pilot databases, aggregate
+# summaries, and private review packets containing real source + BWI data).
+# Never committed. See src/tx-permits-pilot.ts.
+data/private/pilots/
+
 .env
 .env.*
 !.env.example

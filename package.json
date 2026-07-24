@@ -13,6 +13,7 @@
     "bwi:validate": "bun run src/bwi-validate.ts",
     "bwi:smoke": "bun run src/bwi-smoke.ts",
     "source:tx-permits:profile": "bun run src/tx-permits-profile.ts",
+    "source:tx-permits:pilot": "bun run src/tx-permits-pilot.ts",
     "test": "bun test",
     "reset": "rm -f data/sandbox.sqlite && bun run init && bun run seed && bun run ingest --source=dfw-json && bun run ingest --source=dfw-csv && bun run run"
   },

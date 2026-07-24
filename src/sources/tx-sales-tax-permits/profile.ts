@@ -51,6 +51,14 @@ export type TxPermitProfile = {
   insideCityLimitsCount: number;
   outsideCityLimitsCount: number;
   cityLimitsUnknownCount: number;
+  /**
+   * Raw, unmapped `outlet_inside_outside_city_limits_indicator` values and
+   * their counts -- kept distinct from the inside/outside/unknown counts
+   * above so a future mapping can be added once the real code dictionary is
+   * known, without guessing semantics now. A blank/absent value is bucketed
+   * under "(missing)".
+   */
+  cityLimitRawCodeCounts: Record<string, number>;
 };
 
 function bump(counts: Record<string, number>, key: string): void {
@@ -63,6 +71,7 @@ export function profileTxPermitObservations(observations: TxPermitObservation[])
   const organizationTypeCounts: Record<string, number> = {};
   const naicsTwoDigitCounts: Record<string, number> = {};
   const naicsThreeDigitCounts: Record<string, number> = {};
+  const cityLimitRawCodeCounts: Record<string, number> = {};
 
   const taxpayerOutletCounts = new Map<string, number>();
   const seenSourceRecordIds = new Set<string>();
@@ -126,7 +135,10 @@ export function profileTxPermitObservations(observations: TxPermitObservation[])
     if (isPoBoxLikeAddress(outletAddress)) poBoxLikeAddressCount += 1;
     if (isResidentialRiskHeuristic(outletAddress)) residentialRiskHeuristicCount += 1;
 
-    const cityLimits = toStringField(raw.outlet_inside_outside_city_limits_indicator)?.toUpperCase();
+    const cityLimitsRaw = toStringField(raw.outlet_inside_outside_city_limits_indicator);
+    bump(cityLimitRawCodeCounts, cityLimitsRaw ?? "(missing)");
+
+    const cityLimits = cityLimitsRaw?.toUpperCase();
     if (cityLimits?.startsWith("I")) insideCityLimitsCount += 1;
     else if (cityLimits?.startsWith("O")) outsideCityLimitsCount += 1;
     else cityLimitsUnknownCount += 1;
@@ -156,6 +168,7 @@ export function profileTxPermitObservations(observations: TxPermitObservation[])
     residentialRiskHeuristicCount,
     insideCityLimitsCount,
     outsideCityLimitsCount,
-    cityLimitsUnknownCount
+    cityLimitsUnknownCount,
+    cityLimitRawCodeCounts
   };
 }

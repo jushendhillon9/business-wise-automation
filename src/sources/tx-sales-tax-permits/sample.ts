@@ -35,7 +35,7 @@ export type PilotSample = {
 };
 
 /** Small deterministic PRNG (mulberry32) -- Math.random() isn't seedable, and this sample must be reproducible. */
-function mulberry32(seed: number): () => number {
+export function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
   return function random(): number {
     a |= 0;
@@ -46,7 +46,7 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-function seededShuffle<T>(items: readonly T[], random: () => number): T[] {
+export function seededShuffle<T>(items: readonly T[], random: () => number): T[] {
   const result = [...items];
   for (let i = result.length - 1; i > 0; i -= 1) {
     const j = Math.floor(random() * (i + 1));

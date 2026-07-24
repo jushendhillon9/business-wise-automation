@@ -179,6 +179,16 @@ describe("BusinessWiseSnapshotAdapter", () => {
     expect(counts.AFFL).toBe(1);
   });
 
+  test("getRelationshipTypesForRecord reports which relationship types a record participates in, as either parent or child", async () => {
+    const recordsBody = recordRow({ id: "A", name: "A Co" }) + "\n" + recordRow({ id: "B", name: "B Co" }) + "\n" + recordRow({ id: "C", name: "C Co" }) + "\n";
+    const relationshipsBody = "HQTR,A,B\nAFFL,A,C\n";
+    const adapter = await loadAdapter(recordsBody, relationshipsBody);
+    expect(adapter.getRelationshipTypesForRecord("A").sort()).toEqual(["AFFL", "HQTR"]);
+    expect(adapter.getRelationshipTypesForRecord("B")).toEqual(["HQTR"]);
+    expect(adapter.getRelationshipTypesForRecord("C")).toEqual(["AFFL"]);
+    expect(adapter.getRelationshipTypesForRecord("NO-SUCH-RECORD")).toEqual([]);
+  });
+
   test("reports aggregate load stats without exposing individual rows", async () => {
     const body = recordRow({ id: "LOC-1", name: "Co One" }) + "\n" + recordRow({ id: "LOC-2", name: "Co Two" }) + "\n";
     const adapter = await loadAdapter(body, "");

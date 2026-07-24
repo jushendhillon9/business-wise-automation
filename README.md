@@ -491,6 +491,69 @@ Expected behavior with the sample data (`bun run reset && bun run queue`):
 
 See **`docs/COMPANY_LOCATION_MODEL.md`** for the company-identity/location-candidate domain model in depth.
 
+## Real BWI Snapshot — Local Only
+
+`src/business-wise-snapshot-adapter.ts` (`BusinessWiseSnapshotAdapter`) is a real, local, CSV-backed implementation
+of `BusinessWiseAdapter` — the first one this repo has, alongside the still-uninstantiated interface. It reads the
+two real July 2026 DFW BWI production snapshots (~241,194 location records, ~57,575 relationship edges) entirely
+from local disk.
+
+**What it does:** parses both CSVs by header name (order-independent, RFC4180-ish, handles quoted/CRLF/padded
+legacy-CHAR/NULL-or-None values without losing leading zeros — see `src/bwi-snapshot/parse.ts`), builds bounded
+in-memory retrieval indexes (exact phone, exact website domain, exact normalized address, ZIP+similar-name,
+city/state+similar-name, exact normalized name, known parent/child relationship edges), and implements
+`searchPotentialMatches()` as a **bounded candidate-retrieval-only** lookup — it never scores or interprets
+candidates itself; `src/entity-resolution.ts` / `src/entity-resolution-policy.ts` do that, completely unchanged.
+Relationship edges (`AFFL`/`HQTR`) load as a separate parent↔child graph, never merged into the base records (a
+parent can have many children without multiplying rows), and a parent is allowed to have no DFW location row of its
+own.
+
+**What it explicitly does not do:** it never connects to production SQL, never contains credentials, never mutates
+either CSV, and implements no write/publish path — `stageApprovedCandidate()` always throws immediately. Project 1
+stays read-only toward Business Wise; **manual entry through Delphi remains the only production write path** (see
+`docs/BWI_PRODUCTION_DB_DISCOVERY.md` §17).
+
+**Drop folder:** `data/private/bwi/` (tracked `README.md` only — the CSVs themselves are gitignored, never
+committed). Default filenames:
+
+```
+data/private/bwi/bwi_dfw_records_2026-07-23.csv
+data/private/bwi/bwi_dfw_relationships_2026-07-23.csv
+```
+
+Override with environment variables if the files live elsewhere (precedence: explicit path argument > env var >
+default):
+
+```
+BWI_RECORDS_SNAPSHOT_PATH=/absolute/path/to/records.csv
+BWI_RELATIONSHIPS_SNAPSHOT_PATH=/absolute/path/to/relationships.csv
+```
+
+**Commands:**
+
+```bash
+bun run bwi:validate   # structural validation + safe aggregate counts; exits nonzero on structural errors
+bun run bwi:smoke      # loads the adapter, builds indexes, runs bounded synthetic lookup probes
+```
+
+Neither command ever prints a full record, address, company name, or contact — only file paths/sizes, header
+names, row/status/site-type/relationship-type counts, malformed/duplicate counts, and timing. `bun run bwi:smoke`
+never touches `data/sandbox.sqlite` — this adapter is a separate, read-only retrieval path, not an import into the
+existing sandbox.
+
+**Safety rules** (see `data/private/bwi/README.md` for the full list): never commit these CSVs; never upload them
+(or excerpts) to ChatGPT, Claude, GitHub, email, or a personal cloud drive; never use real rows in tests, fixtures,
+or documentation — `src/bwi-snapshot/*.test.ts` and `src/business-wise-snapshot-adapter.test.ts` use only fabricated
+synthetic data.
+
+Production status codes observed in the real snapshot (`DIRE`/`KEEP`/`RSCH`/`RDEL`/`DELE`) are preserved verbatim on
+`ExistingCompany.status` — see the widening note on `ExistingCompanyStatus` in `src/types.ts` and the corresponding
+`RSCH`/`DELE` mappings added to `src/bwi-codes.ts`'s `normalizeBwiLifecycleStatus()`. `KEEP` is preserved raw but
+deliberately left unmapped to a normalized lifecycle value — no BWI documentation confirms its semantics yet, so
+this module does not fabricate one (it normalizes to `unknown`, `recognized: false`, same conservative behavior an
+unrecognized code always gets — see "Known BWI status discrepancy" above, which this evidence partially informs but
+does not fully resolve).
+
 ## Next engineering steps
 
 `docs/BWI_DOMAIN_RULES.md` §23 ("Open domain questions") is the authoritative backlog of what needs confirming from

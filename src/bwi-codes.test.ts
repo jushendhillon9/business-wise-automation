@@ -92,6 +92,26 @@ describe("normalizeBwiLifecycleStatus", () => {
     expect(normalizeBwiLifecycleStatus("RDEL").recognized).toBe(true);
   });
 
+  test("RSCH normalizes to research (observed in the real BWI DFW production snapshot)", () => {
+    const result = normalizeBwiLifecycleStatus("RSCH");
+    expect(result.normalized).toBe("research");
+    expect(result.recognized).toBe(true);
+    expect(result.rawCode).toBe("RSCH");
+  });
+
+  test("DELE normalizes to deleted (observed in the real BWI DFW production snapshot)", () => {
+    const result = normalizeBwiLifecycleStatus("DELE");
+    expect(result.normalized).toBe("deleted");
+    expect(result.recognized).toBe(true);
+  });
+
+  test("KEEP is preserved raw but left unmapped -- no confirmed semantics, never fabricated", () => {
+    const result = normalizeBwiLifecycleStatus("KEEP");
+    expect(result.normalized).toBe("unknown");
+    expect(result.rawCode).toBe("KEEP");
+    expect(result.recognized).toBe(false);
+  });
+
   test("an unknown lifecycle code is preserved safely rather than crashing or guessing", () => {
     const result = normalizeBwiLifecycleStatus("ARCHIVED");
     expect(result.normalized).toBe("unknown");

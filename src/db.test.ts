@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { unlinkSync } from "node:fs";
 import { resolveCandidateAgainstExisting } from "./entity-resolution-policy.ts";
 import { findBestMatch } from "./entity-resolution.ts";
 import { evaluatePublicationReadiness } from "./publication-readiness.ts";
@@ -17,6 +16,7 @@ import {
   openDb,
   upsertReviewQueue
 } from "./db.ts";
+import { closeAndRemoveTestDb, openFreshTestDb, removeTestDbFiles } from "./test-support/sqlite-test-db.ts";
 import { companyFieldPath, contactFieldPath, createFieldEvidence, locationFieldPath } from "./types.ts";
 import type { CompanyIdentity, ExistingCompany, FieldEvidence, LocationCandidate } from "./types.ts";
 
@@ -25,22 +25,11 @@ const TEST_DB_PATH = "data/db.test.sqlite";
 let db: ReturnType<typeof openDb>;
 
 beforeEach(() => {
-  try {
-    unlinkSync(TEST_DB_PATH);
-  } catch {
-    // no previous test db, that's fine
-  }
-  db = openDb(TEST_DB_PATH);
-  createSchema(db);
+  db = openFreshTestDb(TEST_DB_PATH);
 });
 
 afterEach(() => {
-  db.close();
-  try {
-    unlinkSync(TEST_DB_PATH);
-  } catch {
-    // ignore
-  }
+  closeAndRemoveTestDb(db, TEST_DB_PATH);
 });
 
 function makeLocation(id: string, company: CompanyIdentity, overrides: Partial<LocationCandidate> = {}): LocationCandidate {
@@ -355,5 +344,115 @@ describe("foreign-key enforcement (Commit 2.1)", () => {
         decidedAt: new Date().toISOString()
       })
     ).toThrow();
+  });
+});
+
+describe("createSchema() on a completely fresh database", () => {
+  // Uses its own throwaway path/connection rather than the shared
+  // beforeEach/afterEach db above, so this proves createSchema() works
+  // end-to-end against a genuinely brand-new, never-before-opened sqlite
+  // file -- not one that already has tables from a prior createSchema() call
+  // in the same test run.
+  const FRESH_DB_PATH = "data/db-fresh-schema.test.sqlite";
+
+  beforeEach(() => {
+    // Guarantees genuine freshness regardless of any file left over from an
+    // interrupted previous run -- not just relying on afterEach below.
+    removeTestDbFiles(FRESH_DB_PATH);
+  });
+
+  afterEach(() => {
+    // This describe block opens/closes its own db per test (see openDb()
+    // calls below), so cleanup here is real, not just a shared-db no-op.
+    removeTestDbFiles(FRESH_DB_PATH);
+  });
+
+  test("creates every table (including review_decisions and its index) on a brand-new empty database", () => {
+    const freshDb = openDb(FRESH_DB_PATH);
+    try {
+      createSchema(freshDb);
+
+      const tableNames = (freshDb.query(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as Array<{ name: string }>).map(
+        (row) => row.name
+      );
+      expect(tableNames.sort()).toEqual(
+        [
+          "company_identities",
+          "existing_companies",
+          "location_candidates",
+          "review_decisions",
+          "review_queue",
+          "source_records",
+          "source_runs"
+        ].sort()
+      );
+
+      const indexNames = (
+        freshDb.query(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_review_decisions_candidate'`).all() as Array<{
+          name: string;
+        }>
+      ).map((row) => row.name);
+      expect(indexNames).toEqual(["idx_review_decisions_candidate"]);
+    } finally {
+      freshDb.close();
+    }
+  });
+
+  test("review_decisions genuinely accepts a real insert immediately after createSchema() (not just sqlite_master presence)", () => {
+    const freshDb = openDb(FRESH_DB_PATH);
+    try {
+      createSchema(freshDb);
+
+      const company: CompanyIdentity = { id: "co-fresh", legalName: "Fresh Schema Co" };
+      insertCompanyIdentity(freshDb, company);
+      insertLocationCandidate(freshDb, {
+        id: "loc-fresh",
+        company,
+        source: { sourceId: "test", sourceName: "test", fingerprint: "test:loc-fresh", ingestedAt: new Date().toISOString() },
+        capturedAt: new Date().toISOString(),
+        contacts: [],
+        evidence: []
+      });
+
+      expect(() =>
+        insertReviewDecision(freshDb, {
+          id: "dec-fresh",
+          locationCandidateId: "loc-fresh",
+          sequence: 1,
+          reviewer: "jane",
+          action: "needs_more_research",
+          previousStatus: "pending",
+          newStatus: "needs_more_research",
+          selectedBwiRecordId: undefined,
+          notes: undefined,
+          machineRecommendation: {
+            matchClassification: "likely_new",
+            matchScore: 0.1,
+            resolutionOutcome: "likely_new_company",
+            resolutionRequiresHumanReview: false,
+            resolutionReasons: [],
+            resolutionConflicts: [],
+            completenessScore: 0,
+            publicationState: "blocked",
+            publicationBlockerRuleIds: [],
+            reviewPriority: 0
+          },
+          fieldCorrections: [],
+          decidedAt: new Date().toISOString()
+        })
+      ).not.toThrow();
+    } finally {
+      freshDb.close();
+    }
+  });
+
+  test("createSchema() is idempotent -- calling it twice on the same database never throws", () => {
+    const freshDb = openDb(FRESH_DB_PATH);
+    try {
+      createSchema(freshDb);
+      expect(() => createSchema(freshDb)).not.toThrow();
+    } finally {
+      freshDb.close();
+    }
   });
 });

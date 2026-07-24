@@ -20,229 +20,296 @@ export function openDb(path: string = DB_PATH): Database {
   return db;
 }
 
+/**
+ * Explicit, ordered DDL statements -- each executed as its own `db.exec()`
+ * call rather than one large multi-statement string. This guarantees the
+ * creation order is exactly what's listed here (in particular,
+ * `review_decisions` and everything that depends on it, like its index,
+ * only ever run after every table it could reference already exists), and
+ * a failure on any one statement surfaces immediately with that statement's
+ * own name attached, instead of manifesting later as a downstream "no such
+ * table" error from whatever statement never got to run. See
+ * src/db.test.ts's fresh-schema test for the regression coverage.
+ */
+const SCHEMA_STATEMENTS: Array<{ name: string; sql: string }> = [
+  { name: "PRAGMA journal_mode", sql: `PRAGMA journal_mode = WAL;` },
+
+  {
+    // status is the exact raw BWI lifecycle code (e.g. "DIRE", "RDL"), never
+    // normalized away. lifecycle_status is the normalized counterpart,
+    // always recomputed from status via normalizeBwiLifecycleStatus() on
+    // insert (src/bwi-codes.ts) so the two can never drift apart.
+    name: "CREATE TABLE existing_companies",
+    sql: `
+      CREATE TABLE IF NOT EXISTS existing_companies (
+        id TEXT PRIMARY KEY,
+        company_name TEXT NOT NULL,
+        address TEXT,
+        city TEXT,
+        state TEXT,
+        postal_code TEXT,
+        phone TEXT,
+        website TEXT,
+        sic_code TEXT,
+        status TEXT,
+        lifecycle_status TEXT
+      );
+    `
+  },
+
+  {
+    // Company-level identity: facts that should be true across every
+    // location of the same company. Ingestion always creates a fresh,
+    // provisional identity per observation (never merges across sources) --
+    // see docs/COMPANY_LOCATION_MODEL.md. The schema still supports one
+    // identity having many locations, for when entity resolution later
+    // consolidates provisional identities.
+    name: "CREATE TABLE company_identities",
+    sql: `
+      CREATE TABLE IF NOT EXISTS company_identities (
+        id TEXT PRIMARY KEY,
+        legal_name TEXT NOT NULL,
+        dba_name TEXT,
+        website TEXT,
+        email_format TEXT,
+        sic_code TEXT,
+        start_year INTEGER,
+        relationship_json TEXT,
+        international INTEGER,
+        team_page_url TEXT,
+        linkedin_url TEXT,
+        raw_json TEXT NOT NULL
+      );
+    `
+  },
+
+  {
+    // One observed location for a company, as reported by one source item.
+    // Location-level facts live as columns here; company-level facts are
+    // looked up via company_identity_id (and also embedded in raw_json, a
+    // point-in-time snapshot of the full LocationCandidate as ingested).
+    name: "CREATE TABLE location_candidates",
+    sql: `
+      CREATE TABLE IF NOT EXISTS location_candidates (
+        id TEXT PRIMARY KEY,
+        company_identity_id TEXT NOT NULL,
+        company_legal_name TEXT NOT NULL,
+
+        source_id TEXT NOT NULL,
+        source_name TEXT NOT NULL,
+        source_url TEXT,
+        source_record_id TEXT,
+        fingerprint TEXT NOT NULL,
+        captured_at TEXT NOT NULL,
+        ingested_at TEXT NOT NULL,
+
+        physical_street TEXT,
+        physical_suite TEXT,
+        physical_city TEXT,
+        physical_state TEXT,
+        physical_postal_code TEXT,
+        mailing_address_json TEXT,
+
+        phone TEXT,
+        toll_free_phone TEXT,
+        market TEXT,
+        county TEXT,
+
+        site_type TEXT,
+        raw_site_type_code TEXT,
+        building_name TEXT,
+        building_type TEXT,
+        lease_or_own TEXT,
+
+        employee_size_site_json TEXT,
+        employee_size_company_wide_json TEXT,
+        employee_count_exact INTEGER,
+        total_sites INTEGER,
+        estimated_annual_revenue_json TEXT,
+
+        description TEXT,
+        contacts_json TEXT NOT NULL DEFAULT '[]',
+        evidence_json TEXT NOT NULL,
+        -- Field-level evidence and confidence (Task 6, docs/BWI_DOMAIN_RULES.md
+        -- §15) -- FieldEvidence[] (src/types.ts), keyed to individual
+        -- company/location/contact fields. Stored as its own column (mirroring
+        -- evidence_json above) even though raw_json already contains it, for
+        -- the same reason the other *_json columns exist. Defaults to '[]' so
+        -- rows inserted before this column existed still load safely.
+        field_evidence_json TEXT NOT NULL DEFAULT '[]',
+        raw_source_json TEXT,
+        raw_json TEXT NOT NULL,
+
+        FOREIGN KEY(company_identity_id) REFERENCES company_identities(id)
+      );
+    `
+  },
+
+  {
+    // Publication readiness is a structured, three-state assessment (see
+    // PublicationReadinessAssessment in src/publication-readiness.ts) -- not a
+    // weighted score, and not a plain boolean. research completeness is a
+    // separate descriptive score of how much we know. Neither implies the
+    // other, and neither implies approval or authorization to write/publish
+    // in production (see docs/BWI_PRODUCTION_DB_DISCOVERY.md).
+    //
+    // publication_state is the source of truth: 'blocked' | 'provisionally_ready'
+    // | 'confirmed_ready'. publication_ready is a TEMPORARY compatibility
+    // column derived from it (1 only when publication_state = 'confirmed_ready')
+    // for consumers not yet reading publication_state directly -- see
+    // isPublicationReadyCompat() in src/publication-readiness.ts.
+    // TODO(remove): drop publication_ready once every consumer reads publication_state.
+    //
+    // Two distinct entity-resolution layers are both persisted here, deliberately
+    // kept in separate columns rather than overloading one "classification" value:
+    //   - match_* / best_existing_company_id: the existing low-level similarity
+    //     layer (src/entity-resolution.ts) -- score, likely_new/possible_duplicate/
+    //     likely_duplicate, and the single best-scoring existing record, unchanged
+    //     since before the business-outcome layer existed.
+    //   - resolution_*: the richer, conservative business-outcome layer
+    //     (src/entity-resolution-policy.ts) built on top of the above -- e.g.
+    //     same_existing_location / new_branch_of_existing_company / ... plus
+    //     ranked alternatives, explainable reason/conflict codes, and whether the
+    //     decision needs extra human scrutiny.
+    name: "CREATE TABLE review_queue",
+    sql: `
+      CREATE TABLE IF NOT EXISTS review_queue (
+        location_candidate_id TEXT PRIMARY KEY,
+        best_existing_company_id TEXT,
+        match_score REAL NOT NULL,
+        match_classification TEXT NOT NULL,
+        match_reasons_json TEXT NOT NULL,
+        match_evidence_json TEXT NOT NULL DEFAULT '{}',
+        resolution_outcome TEXT NOT NULL,
+        resolution_confidence REAL,
+        resolution_reasons_json TEXT NOT NULL DEFAULT '[]',
+        resolution_conflicts_json TEXT NOT NULL DEFAULT '[]',
+        resolution_matched_existing_company_id TEXT,
+        resolution_related_existing_company_ids_json TEXT NOT NULL DEFAULT '[]',
+        resolution_alternative_matches_json TEXT NOT NULL DEFAULT '[]',
+        resolution_requires_human_review INTEGER NOT NULL DEFAULT 0,
+        completeness_score REAL NOT NULL,
+        completeness_present_fields_json TEXT NOT NULL DEFAULT '[]',
+        completeness_missing_fields_json TEXT NOT NULL DEFAULT '[]',
+        publication_state TEXT NOT NULL DEFAULT 'blocked',
+        publication_blockers_json TEXT NOT NULL DEFAULT '[]',
+        publication_unresolved_rules_json TEXT NOT NULL DEFAULT '[]',
+        publication_satisfied_requirements_json TEXT NOT NULL DEFAULT '[]',
+        publication_optional_missing_fields_json TEXT NOT NULL DEFAULT '[]',
+        publication_ready INTEGER NOT NULL DEFAULT 0,
+        review_priority REAL NOT NULL,
+        review_status TEXT NOT NULL DEFAULT 'pending',
+        reviewer_note TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(location_candidate_id) REFERENCES location_candidates(id)
+      );
+    `
+  },
+
+  {
+    // One row per source ingestion invocation. Answers: which source ran,
+    // when, and how many raw/valid/new/duplicate/skipped records it produced.
+    name: "CREATE TABLE source_runs",
+    sql: `
+      CREATE TABLE IF NOT EXISTS source_runs (
+        id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL,
+        source_name TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        status TEXT NOT NULL DEFAULT 'running',
+        raw_count INTEGER NOT NULL DEFAULT 0,
+        valid_count INTEGER NOT NULL DEFAULT 0,
+        new_candidate_count INTEGER NOT NULL DEFAULT 0,
+        already_ingested_count INTEGER NOT NULL DEFAULT 0,
+        skipped_count INTEGER NOT NULL DEFAULT 0,
+        error_message TEXT
+      );
+    `
+  },
+
+  {
+    // Ingestion-deduplication ledger: has this exact source item already been
+    // processed? Distinct from entity resolution, which asks whether a
+    // location candidate matches an existing Business Wise company/location.
+    name: "CREATE TABLE source_records",
+    sql: `
+      CREATE TABLE IF NOT EXISTS source_records (
+        source_id TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        source_record_id TEXT,
+        location_candidate_id TEXT NOT NULL,
+        first_run_id TEXT NOT NULL,
+        first_ingested_at TEXT NOT NULL,
+        PRIMARY KEY (source_id, fingerprint),
+        FOREIGN KEY(location_candidate_id) REFERENCES location_candidates(id),
+        FOREIGN KEY(first_run_id) REFERENCES source_runs(id)
+      );
+    `
+  },
+
+  {
+    // Append-only reviewer-decision ledger (src/review-decisions.ts). This is
+    // the source of truth for a candidate's review history -- review_queue's
+    // review_status/reviewer_note columns are only ever a convenience cache
+    // of the latest row here, kept in sync by recordReviewDecision(), never
+    // written any other way. No code path ever UPDATEs or DELETEs a row in
+    // this table; only INSERT. sequence is 1-based per location_candidate_id,
+    // assigned inside the same BEGIN IMMEDIATE transaction as the insert so
+    // concurrent calls can't allocate the same value -- the UNIQUE
+    // constraint below is a defense-in-depth backstop, not the primary
+    // guard. selected_bwi_record_id is the reviewer's own chosen target,
+    // distinct from the machine's recommended match captured inside
+    // machine_recommendation_json (see MachineRecommendationSnapshot).
+    // field_corrections_json is captured for audit only in this commit --
+    // never applied back to location_candidates/company_identities/
+    // field evidence.
+    //
+    // Must be created (and populated) before the index below -- see
+    // "CREATE INDEX idx_review_decisions_candidate" a few entries down,
+    // which depends on this table already existing.
+    name: "CREATE TABLE review_decisions",
+    sql: `
+      CREATE TABLE IF NOT EXISTS review_decisions (
+        id TEXT PRIMARY KEY,
+        location_candidate_id TEXT NOT NULL,
+        sequence INTEGER NOT NULL,
+        reviewer TEXT NOT NULL,
+        action TEXT NOT NULL,
+        previous_status TEXT NOT NULL,
+        new_status TEXT NOT NULL,
+        selected_bwi_record_id TEXT,
+        notes TEXT,
+        machine_recommendation_json TEXT NOT NULL,
+        field_corrections_json TEXT NOT NULL DEFAULT '[]',
+        decided_at TEXT NOT NULL,
+        UNIQUE(location_candidate_id, sequence),
+        FOREIGN KEY(location_candidate_id) REFERENCES location_candidates(id)
+      );
+    `
+  },
+
+  {
+    // Depends on review_decisions (created immediately above) already
+    // existing -- ordering here is enforced by SCHEMA_STATEMENTS's array
+    // order, not by hoping a single multi-statement exec() runs in order.
+    name: "CREATE INDEX idx_review_decisions_candidate",
+    sql: `
+      CREATE INDEX IF NOT EXISTS idx_review_decisions_candidate
+        ON review_decisions(location_candidate_id, sequence);
+    `
+  }
+];
+
 export function createSchema(db: Database): void {
-  db.exec(`
-    PRAGMA journal_mode = WAL;
-
-    -- status is the exact raw BWI lifecycle code (e.g. "DIRE", "RDL"), never
-    -- normalized away. lifecycle_status is the normalized counterpart,
-    -- always recomputed from status via normalizeBwiLifecycleStatus() on
-    -- insert (src/bwi-codes.ts) so the two can never drift apart.
-    CREATE TABLE IF NOT EXISTS existing_companies (
-      id TEXT PRIMARY KEY,
-      company_name TEXT NOT NULL,
-      address TEXT,
-      city TEXT,
-      state TEXT,
-      postal_code TEXT,
-      phone TEXT,
-      website TEXT,
-      sic_code TEXT,
-      status TEXT,
-      lifecycle_status TEXT
-    );
-
-    -- Company-level identity: facts that should be true across every
-    -- location of the same company. Ingestion always creates a fresh,
-    -- provisional identity per observation (never merges across sources) --
-    -- see docs/COMPANY_LOCATION_MODEL.md. The schema still supports one
-    -- identity having many locations, for when entity resolution later
-    -- consolidates provisional identities.
-    CREATE TABLE IF NOT EXISTS company_identities (
-      id TEXT PRIMARY KEY,
-      legal_name TEXT NOT NULL,
-      dba_name TEXT,
-      website TEXT,
-      email_format TEXT,
-      sic_code TEXT,
-      start_year INTEGER,
-      relationship_json TEXT,
-      international INTEGER,
-      team_page_url TEXT,
-      linkedin_url TEXT,
-      raw_json TEXT NOT NULL
-    );
-
-    -- One observed location for a company, as reported by one source item.
-    -- Location-level facts live as columns here; company-level facts are
-    -- looked up via company_identity_id (and also embedded in raw_json, a
-    -- point-in-time snapshot of the full LocationCandidate as ingested).
-    CREATE TABLE IF NOT EXISTS location_candidates (
-      id TEXT PRIMARY KEY,
-      company_identity_id TEXT NOT NULL,
-      company_legal_name TEXT NOT NULL,
-
-      source_id TEXT NOT NULL,
-      source_name TEXT NOT NULL,
-      source_url TEXT,
-      source_record_id TEXT,
-      fingerprint TEXT NOT NULL,
-      captured_at TEXT NOT NULL,
-      ingested_at TEXT NOT NULL,
-
-      physical_street TEXT,
-      physical_suite TEXT,
-      physical_city TEXT,
-      physical_state TEXT,
-      physical_postal_code TEXT,
-      mailing_address_json TEXT,
-
-      phone TEXT,
-      toll_free_phone TEXT,
-      market TEXT,
-      county TEXT,
-
-      site_type TEXT,
-      raw_site_type_code TEXT,
-      building_name TEXT,
-      building_type TEXT,
-      lease_or_own TEXT,
-
-      employee_size_site_json TEXT,
-      employee_size_company_wide_json TEXT,
-      employee_count_exact INTEGER,
-      total_sites INTEGER,
-      estimated_annual_revenue_json TEXT,
-
-      description TEXT,
-      contacts_json TEXT NOT NULL DEFAULT '[]',
-      evidence_json TEXT NOT NULL,
-      -- Field-level evidence and confidence (Task 6, docs/BWI_DOMAIN_RULES.md
-      -- §15) -- FieldEvidence[] (src/types.ts), keyed to individual
-      -- company/location/contact fields. Stored as its own column (mirroring
-      -- evidence_json above) even though raw_json already contains it, for
-      -- the same reason the other *_json columns exist. Defaults to '[]' so
-      -- rows inserted before this column existed still load safely.
-      field_evidence_json TEXT NOT NULL DEFAULT '[]',
-      raw_source_json TEXT,
-      raw_json TEXT NOT NULL,
-
-      FOREIGN KEY(company_identity_id) REFERENCES company_identities(id)
-    );
-
-    -- Publication readiness is a structured, three-state assessment (see
-    -- PublicationReadinessAssessment in src/publication-readiness.ts) -- not a
-    -- weighted score, and not a plain boolean. research completeness is a
-    -- separate descriptive score of how much we know. Neither implies the
-    -- other, and neither implies approval or authorization to write/publish
-    -- in production (see docs/BWI_PRODUCTION_DB_DISCOVERY.md).
-    --
-    -- publication_state is the source of truth: 'blocked' | 'provisionally_ready'
-    -- | 'confirmed_ready'. publication_ready is a TEMPORARY compatibility
-    -- column derived from it (1 only when publication_state = 'confirmed_ready')
-    -- for consumers not yet reading publication_state directly -- see
-    -- isPublicationReadyCompat() in src/publication-readiness.ts.
-    -- TODO(remove): drop publication_ready once every consumer reads publication_state.
-    --
-    -- Two distinct entity-resolution layers are both persisted here, deliberately
-    -- kept in separate columns rather than overloading one "classification" value:
-    --   - match_* / best_existing_company_id: the existing low-level similarity
-    --     layer (src/entity-resolution.ts) -- score, likely_new/possible_duplicate/
-    --     likely_duplicate, and the single best-scoring existing record, unchanged
-    --     since before the business-outcome layer existed.
-    --   - resolution_*: the richer, conservative business-outcome layer
-    --     (src/entity-resolution-policy.ts) built on top of the above -- e.g.
-    --     same_existing_location / new_branch_of_existing_company / ... plus
-    --     ranked alternatives, explainable reason/conflict codes, and whether the
-    --     decision needs extra human scrutiny.
-    CREATE TABLE IF NOT EXISTS review_queue (
-      location_candidate_id TEXT PRIMARY KEY,
-      best_existing_company_id TEXT,
-      match_score REAL NOT NULL,
-      match_classification TEXT NOT NULL,
-      match_reasons_json TEXT NOT NULL,
-      match_evidence_json TEXT NOT NULL DEFAULT '{}',
-      resolution_outcome TEXT NOT NULL,
-      resolution_confidence REAL,
-      resolution_reasons_json TEXT NOT NULL DEFAULT '[]',
-      resolution_conflicts_json TEXT NOT NULL DEFAULT '[]',
-      resolution_matched_existing_company_id TEXT,
-      resolution_related_existing_company_ids_json TEXT NOT NULL DEFAULT '[]',
-      resolution_alternative_matches_json TEXT NOT NULL DEFAULT '[]',
-      resolution_requires_human_review INTEGER NOT NULL DEFAULT 0,
-      completeness_score REAL NOT NULL,
-      completeness_present_fields_json TEXT NOT NULL DEFAULT '[]',
-      completeness_missing_fields_json TEXT NOT NULL DEFAULT '[]',
-      publication_state TEXT NOT NULL DEFAULT 'blocked',
-      publication_blockers_json TEXT NOT NULL DEFAULT '[]',
-      publication_unresolved_rules_json TEXT NOT NULL DEFAULT '[]',
-      publication_satisfied_requirements_json TEXT NOT NULL DEFAULT '[]',
-      publication_optional_missing_fields_json TEXT NOT NULL DEFAULT '[]',
-      publication_ready INTEGER NOT NULL DEFAULT 0,
-      review_priority REAL NOT NULL,
-      review_status TEXT NOT NULL DEFAULT 'pending',
-      reviewer_note TEXT,
-      created_at TEXT NOT NULL,
-      FOREIGN KEY(location_candidate_id) REFERENCES location_candidates(id)
-    );
-
-    -- One row per source ingestion invocation. Answers: which source ran,
-    -- when, and how many raw/valid/new/duplicate/skipped records it produced.
-    CREATE TABLE IF NOT EXISTS source_runs (
-      id TEXT PRIMARY KEY,
-      source_id TEXT NOT NULL,
-      source_name TEXT NOT NULL,
-      started_at TEXT NOT NULL,
-      finished_at TEXT,
-      status TEXT NOT NULL DEFAULT 'running',
-      raw_count INTEGER NOT NULL DEFAULT 0,
-      valid_count INTEGER NOT NULL DEFAULT 0,
-      new_candidate_count INTEGER NOT NULL DEFAULT 0,
-      already_ingested_count INTEGER NOT NULL DEFAULT 0,
-      skipped_count INTEGER NOT NULL DEFAULT 0,
-      error_message TEXT
-    );
-
-    -- Ingestion-deduplication ledger: has this exact source item already been
-    -- processed? Distinct from entity resolution, which asks whether a
-    -- location candidate matches an existing Business Wise company/location.
-    CREATE TABLE IF NOT EXISTS source_records (
-      source_id TEXT NOT NULL,
-      fingerprint TEXT NOT NULL,
-      source_record_id TEXT,
-      location_candidate_id TEXT NOT NULL,
-      first_run_id TEXT NOT NULL,
-      first_ingested_at TEXT NOT NULL,
-      PRIMARY KEY (source_id, fingerprint),
-      FOREIGN KEY(location_candidate_id) REFERENCES location_candidates(id),
-      FOREIGN KEY(first_run_id) REFERENCES source_runs(id)
-    );
-
-    -- Append-only reviewer-decision ledger (src/review-decisions.ts). This is
-    -- the source of truth for a candidate's review history -- review_queue's
-    -- review_status/reviewer_note columns are only ever a convenience cache
-    -- of the latest row here, kept in sync by recordReviewDecision(), never
-    -- written any other way. No code path ever UPDATEs or DELETEs a row in
-    -- this table; only INSERT. sequence is 1-based per location_candidate_id,
-    -- assigned inside the same BEGIN IMMEDIATE transaction as the insert so
-    -- concurrent calls can't allocate the same value -- the UNIQUE
-    -- constraint below is a defense-in-depth backstop, not the primary
-    -- guard. selected_bwi_record_id is the reviewer's own chosen target,
-    -- distinct from the machine's recommended match captured inside
-    -- machine_recommendation_json (see MachineRecommendationSnapshot).
-    -- field_corrections_json is captured for audit only in this commit --
-    -- never applied back to location_candidates/company_identities/
-    -- field evidence.
-    CREATE TABLE IF NOT EXISTS review_decisions (
-      id TEXT PRIMARY KEY,
-      location_candidate_id TEXT NOT NULL,
-      sequence INTEGER NOT NULL,
-      reviewer TEXT NOT NULL,
-      action TEXT NOT NULL,
-      previous_status TEXT NOT NULL,
-      new_status TEXT NOT NULL,
-      selected_bwi_record_id TEXT,
-      notes TEXT,
-      machine_recommendation_json TEXT NOT NULL,
-      field_corrections_json TEXT NOT NULL DEFAULT '[]',
-      decided_at TEXT NOT NULL,
-      UNIQUE(location_candidate_id, sequence),
-      FOREIGN KEY(location_candidate_id) REFERENCES location_candidates(id)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_review_decisions_candidate
-      ON review_decisions(location_candidate_id, sequence);
-  `);
+  for (const statement of SCHEMA_STATEMENTS) {
+    try {
+      db.exec(statement.sql);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`createSchema(): failed executing "${statement.name}": ${message}`);
+    }
+  }
 }
 
 export function insertExistingCompany(db: Database, company: ExistingCompany): void {

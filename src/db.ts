@@ -7,8 +7,17 @@ import type { CompanyIdentity, EntityResolutionDecision, ExistingCompany, Locati
 
 export const DB_PATH = "data/sandbox.sqlite";
 
+/**
+ * Enables foreign-key enforcement on every connection this process opens --
+ * `PRAGMA foreign_keys` is per-connection in SQLite, never persisted in the
+ * database file itself, so it must be set here (not just once during
+ * `createSchema()`) or every FOREIGN KEY declared in the schema is silently
+ * decorative. See src/db.test.ts for the regression test.
+ */
 export function openDb(path: string = DB_PATH): Database {
-  return new Database(path, { create: true });
+  const db = new Database(path, { create: true });
+  db.exec("PRAGMA foreign_keys = ON;");
+  return db;
 }
 
 export function createSchema(db: Database): void {

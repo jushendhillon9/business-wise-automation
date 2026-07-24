@@ -9,6 +9,7 @@ import {
   insertCompanyIdentity,
   insertExistingCompany,
   insertLocationCandidate,
+  insertReviewDecision,
   loadExistingCompanies,
   loadLocationCandidates,
   loadLocationCandidatesByCompanyId,
@@ -317,5 +318,42 @@ describe("19. review_queue persists and reloads the richer business-resolution o
     const [row] = loadReviewQueue(db);
     expect(row?.matchClassification).toBe("likely_new");
     expect(row?.resolutionOutcome).toBe("likely_new_company");
+  });
+});
+
+describe("foreign-key enforcement (Commit 2.1)", () => {
+  test("openDb() enables foreign_keys on every connection, not just during createSchema()", () => {
+    const pragma = db.query("PRAGMA foreign_keys").get() as { foreign_keys: number };
+    expect(pragma.foreign_keys).toBe(1);
+  });
+
+  test("inserting a review decision for a nonexistent location candidate is rejected", () => {
+    expect(() =>
+      insertReviewDecision(db, {
+        id: "dec-orphan",
+        locationCandidateId: "does-not-exist",
+        sequence: 1,
+        reviewer: "jane",
+        action: "needs_more_research",
+        previousStatus: "pending",
+        newStatus: "needs_more_research",
+        selectedBwiRecordId: undefined,
+        notes: undefined,
+        machineRecommendation: {
+          matchClassification: "likely_new",
+          matchScore: 0.1,
+          resolutionOutcome: "likely_new_company",
+          resolutionRequiresHumanReview: false,
+          resolutionReasons: [],
+          resolutionConflicts: [],
+          completenessScore: 0,
+          publicationState: "blocked",
+          publicationBlockerRuleIds: [],
+          reviewPriority: 0
+        },
+        fieldCorrections: [],
+        decidedAt: new Date().toISOString()
+      })
+    ).toThrow();
   });
 });

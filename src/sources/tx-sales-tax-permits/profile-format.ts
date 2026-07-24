@@ -50,4 +50,6 @@ export function printTxPermitProfile(profile: TxPermitProfile): void {
   console.log(`Inside city limits: ${profile.insideCityLimitsCount}`);
   console.log(`Outside city limits: ${profile.outsideCityLimitsCount}`);
   console.log(`City-limits indicator unknown/unrecognized: ${profile.cityLimitsUnknownCount}`);
+  console.log("");
+  printCountMap("City-limits raw code distribution (unmapped -- semantics not yet confirmed)", profile.cityLimitRawCodeCounts);
 }

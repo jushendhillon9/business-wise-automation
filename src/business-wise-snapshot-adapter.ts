@@ -54,6 +54,12 @@ function cityStateKey(city?: string, state?: string): string | undefined {
   return `${city.trim().toLowerCase()}|${state.trim().toLowerCase()}`;
 }
 
+function addRelationshipType(map: Map<string, Set<string>>, id: string, type: string): void {
+  const set = map.get(id);
+  if (set) set.add(type);
+  else map.set(id, new Set([type]));
+}
+
 export class BusinessWiseSnapshotAdapter implements BusinessWiseAdapter {
   private readonly recordsById = new Map<string, BwiSnapshotRecord>();
   private readonly phoneIndex = new Map<string, string[]>();
@@ -64,6 +70,8 @@ export class BusinessWiseSnapshotAdapter implements BusinessWiseAdapter {
   private readonly nameIndex = new Map<string, string[]>();
   private readonly childrenByParentId = new Map<string, string[]>();
   private readonly parentIdByChildId = new Map<string, string>();
+  /** Distinct relationship types (HQTR/AFFL) each BWI record id participates in, as either parent or child. Additive lookup only -- never consulted by searchPotentialMatches()/matching logic. */
+  private readonly relationshipTypesByRecordId = new Map<string, Set<string>>();
   private relationshipTypeCounts: Record<string, number> | undefined;
   private loadStats: BwiSnapshotLoadStats | undefined;
 
@@ -127,6 +135,9 @@ export class BusinessWiseSnapshotAdapter implements BusinessWiseAdapter {
       if (!this.parentIdByChildId.has(relationship.childBwiId)) {
         this.parentIdByChildId.set(relationship.childBwiId, relationship.parentBwiId);
       }
+
+      addRelationshipType(this.relationshipTypesByRecordId, relationship.parentBwiId, relationship.relationshipType);
+      addRelationshipType(this.relationshipTypesByRecordId, relationship.childBwiId, relationship.relationshipType);
     }
     this.relationshipTypeCounts = countByRelationshipType(parsedRelationships.relationships);
 
@@ -185,6 +196,11 @@ export class BusinessWiseSnapshotAdapter implements BusinessWiseAdapter {
 
   getParentId(childBwiId: string): string | undefined {
     return this.parentIdByChildId.get(childBwiId);
+  }
+
+  /** Distinct relationship types (e.g. "HQTR", "AFFL") this BWI record participates in, as either parent or child. Empty array when the record has no known relationship edge. */
+  getRelationshipTypesForRecord(bwiLocationId: string): string[] {
+    return [...(this.relationshipTypesByRecordId.get(bwiLocationId) ?? [])];
   }
 
   private toExistingCompany(record: BwiSnapshotRecord): ExistingCompany {

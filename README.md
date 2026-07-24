@@ -610,6 +610,86 @@ an address, a taxpayer/outlet number, a raw row, or the app token.
 test in `src/sources/tx-sales-tax-permits/*.test.ts` uses fabricated taxpayer/outlet data against a stubbed
 `fetchImpl`, never the real API).
 
+## Texas Sales-Tax Permit Shadow Pilot
+
+`src/sources/tx-sales-tax-permits/adapter.ts` (`createTxSalesTaxPermitSourceAdapter`) + `src/tx-permits-pilot.ts`
+(`bun run source:tx-permits:pilot`) connect the profiled Texas permit source to the existing BWI matching/review
+pipeline end to end, entirely locally, so the mapping and match quality can be evaluated **before** any permanent
+integration work. This is a real `SourceAdapter` (the repository's existing abstraction — same shape as
+`src/sources/dfw-csv-adapter.ts`), not a new pipeline: ingestion, entity resolution, publication readiness, and the
+review queue are all reused completely unchanged.
+
+**Requirements before running:**
+- A local profiler output directory from `bun run source:tx-permits:profile` (`raw.ndjson`, and optionally
+  `manifest.json`) — see the profiling section above. Default: `data/private/sources/tx-sales-tax-permits/2026-07-24-7d-2000`
+  (a convenience pointer at one specific local pull, not a guarantee that directory exists — always pass
+  `--source-dir` for a different pull).
+- The real local BWI snapshot at `data/private/bwi/` (see "Real BWI Snapshot — Local Only" above) — loaded once per
+  pilot run via the existing `BusinessWiseSnapshotAdapter`.
+
+**Command:**
+
+```bash
+bun run source:tx-permits:pilot \
+  --source-dir=data/private/sources/tx-sales-tax-permits/2026-07-24-7d-2000 \
+  --limit=154 \
+  --review-sample-size=20 \
+  --seed=1
+```
+
+Other supported flags: `--output=<path>` (private pilot run directory; default
+`data/private/pilots/tx-sales-tax-permits/<run-id>/`), `--db=<path>` (default `<output>/pilot.sqlite`, always an
+isolated database — **never** `data/sandbox.sqlite`), `--reset` (deletes only the one explicitly resolved pilot
+database + its WAL/SHM sidecars before running; never touches any other file).
+
+**What the pipeline does, per observation:** maps the raw permit row into a `CompanyIdentity`/`LocationCandidate`
+(outlet as the operating location — see the adapter mapping rules below) → persists it through the existing
+ingestion path (idempotent: rerunning the same source snapshot never creates duplicate candidates) → retrieves a
+bounded candidate set from the BWI snapshot's indexed lookups (never a full scan of the ~241k records) →
+runs the existing, unmodified entity-resolution policy and publication-readiness evaluation → upserts a row into the
+isolated pilot's local `review_queue`. No human review decision is ever recorded automatically.
+
+**Adapter mapping rules** (see `src/sources/tx-sales-tax-permits/adapter.ts` for the full rationale):
+- `outlet_name` is preferred as the operating display name (`company.legalName`); `taxpayer_name` is the fallback
+  only when `outlet_name` is absent, and is *always* separately preserved as its own field evidence — neither name
+  is ever discarded.
+- `outlet_naics_code` is preserved as evidence only, **never** written into `company.sicCode` and never
+  auto-converted to a SIC code.
+- `outlet_permit_issue_date`/`outlet_first_sales_date` are preserved as evidence only, **never** mapped onto
+  `company.startYear` (this source does not support a founding-year claim).
+- A multi-outlet taxpayer, or a taxpayer/outlet name difference, is recorded as source metadata/evidence only —
+  **never** an automatic branch/site-type classification. The existing entity-resolution policy makes that call.
+- Unsupported fields (phone, website, contacts, employee count, revenue, SIC, building type, total sites) are left
+  undefined, never fabricated.
+
+**Aggregate summary** (`summary.json` + safe terminal output) reports source-processing counts, BWI retrieval-set
+statistics (zero/one-or-more-result counts, average/median/max size, latency), the full entity-resolution outcome
+distribution, matched-record lifecycle-status counts (DIRE/KEEP/RSCH/RDEL/DELE) and lifecycle-warning counts,
+HQTR/AFFL relationship-context counts, and the publication-readiness distribution with top blockers/optional-missing
+fields — aggregate counts only, never a name, address, or identifier.
+
+**The 20-case review sample** (`review-sample.json`/`.csv`) is selected deterministically (seeded, reproducible) by
+spreading round-robin across every observed combination of outcome type, retrieval-found/not-found,
+deleted/research-deleted lifecycle risk, name-difference, address-risk heuristic, NAICS prefix, and county — so it's
+never dominated by one outcome. Unlike every other pilot output, **this packet legitimately contains real source and
+BWI data** (source fields, the machine's recommended outcome/confidence/matched-record summary/reasons/conflicts/
+readiness) for authorized local review. It excludes BWI contact data (the BWI snapshot model has none to begin
+with).
+
+**Safety rules — read before running:**
+- `data/private/pilots/` is gitignored exactly like `data/private/bwi/` and `data/private/sources/` — never commit
+  or upload `pilot.sqlite`, `review-sample.json`, or `review-sample.csv`; never copy real rows into tests, fixtures,
+  or documentation.
+- **No production writes of any kind**: no BWI production SQL connection, no stored procedures, no Delphi writes, no
+  `stageApprovedCandidate()` call (this pilot never calls it). Manual entry through Delphi remains the only
+  production write path.
+- **No enrichment**: no web/domain/phone/contact lookups, no employee/SIC inference, no external API calls beyond
+  reading the already-downloaded local source snapshot. This pilot measures source-to-BWI matching behavior only,
+  strictly before any enrichment work.
+- To rerun safely: the pilot database is fully isolated per run (or per `--db` path) and idempotent — rerunning
+  without `--reset` simply re-scores the same candidates; `--reset` only ever deletes the one database path you
+  gave it.
+
 ## Next engineering steps
 
 `docs/BWI_DOMAIN_RULES.md` §23 ("Open domain questions") is the authoritative backlog of what needs confirming from

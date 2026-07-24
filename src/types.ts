@@ -262,6 +262,13 @@ export type FieldEvidenceSourceType =
   | "chamber_of_commerce"
   | "economic_development_org"
   | "county_business_license"
+  /**
+   * A state-government tax-registry record (e.g. the Texas Comptroller's
+   * sales-tax-permit-holder dataset, dataset ID jrea-zgmq -- see
+   * src/sources/tx-sales-tax-permits/). Distinct from `county_business_license`:
+   * this is a state-level registry, not a county license record.
+   */
+  | "state_sales_tax_permit"
   | "research_on_demand_request"
   | "existing_bwi_record"
   | "human_research_decision"
